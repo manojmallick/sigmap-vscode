@@ -1,8 +1,8 @@
 {
   "name": "sigmap",
   "displayName": "SigMap — AI Context Engine",
-  "description": "97% token reduction for Copilot, Claude & Cursor. Extracts code signatures from 21 languages into copilot-instructions.md automatically.",
-  "version": "6.0.0",
+  "description": "96.9% token reduction for Copilot, Claude & Cursor. Extracts code signatures from 29 languages into copilot-instructions.md automatically.",
+  "version": "4.0.0",
   "publisher": "manojmallick",
   "engines": {
     "vscode": "^1.85.0"
@@ -31,7 +31,9 @@
     "codebase context",
     "typescript",
     "python",
-    "go"
+    "go",
+    "openai",
+    "codex"
   ],
   "galleryBanner": {
     "color": "#1e1e2e",
@@ -66,11 +68,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/manojmallick/sigmap.git"
+    "url": "https://github.com/manojmallick/sigmap-vscode.git"
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/manojmallick/sigmap/issues"
+    "url": "https://github.com/manojmallick/sigmap-vscode/issues"
   },
   "homepage": "https://manojmallick.github.io/sigmap/"
 }
