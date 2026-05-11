@@ -1,0 +1,12 @@
+node_modules/
+*.vsix
+.DS_Store
+.vscode-test/
+out/
+dist/
+*.js.map
+.env
+.env.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
