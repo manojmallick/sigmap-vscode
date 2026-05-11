@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.1.0] - 2026-05-11
+
+### Fixed
+- Windows PATH resolution now checks `%LOCALAPPDATA%\npm`, `nvm-windows` paths (`%APPDATA%\nvm\<version>`), fnm (Fast Node Manager), and Node.js official installer default location (`C:\Program Files\nodejs`)
+- `where` command output parsing now filters `INFO:` and `WARNING:` prefix lines to avoid false positives
+- Improved diagnostic logging — check Output → SigMap channel when extension cannot locate sigmap binary
+
+### Added
+- Complete Jest unit test suite with 26 tests covering path resolution, executable detection, and decorations
+- `test` and `test:watch` npm scripts
+- `jest` and `jest.setup.js` configuration for testing VS Code extension functions
+- Helper functions now exported from `extension.js` for testability
+
 ## [3.4.0] - 2026-04-14
 
 ### Added

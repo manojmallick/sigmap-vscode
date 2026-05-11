@@ -137,7 +137,36 @@ function resolveGlobalCommand(root) {
   // 6. common Windows global npm / user bin dirs
   if (isWindows()) {
     const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+
+    // npm global paths
     addDir(path.join(appData, 'npm'));
+    addDir(path.join(localAppData, 'npm'));
+
+    // nvm-windows (uses %APPDATA%\nvm, not ~/.nvm)
+    const nvmWinDir = path.join(appData, 'nvm');
+    if (fs.existsSync(nvmWinDir)) {
+      try {
+        fs.readdirSync(nvmWinDir)
+          .filter(v => /^v?\d/.test(v))
+          .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+          .forEach(v => addDir(path.join(nvmWinDir, v)));
+      } catch (_) {}
+    }
+
+    // Node.js official Windows installer default
+    addDir(path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs'));
+
+    // fnm (Fast Node Manager) on Windows
+    const fnmDir = path.join(localAppData, 'fnm', 'node-versions');
+    if (fs.existsSync(fnmDir)) {
+      try {
+        fs.readdirSync(fnmDir)
+          .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+          .forEach(v => addDir(path.join(fnmDir, v, 'installation')));
+      } catch (_) {}
+    }
+
     addDir(path.join(home, 'bin'));
     addDir(path.join(home, '.local', 'bin'));
   }
@@ -150,8 +179,10 @@ function resolveGlobalCommand(root) {
     for (const name of EXECUTABLE_NAMES) {
       try {
         const result = execFileSync('where', [name], { timeout: 4000, encoding: 'utf8' });
-        const first = result.split(/\r?\n/).map(s => s.trim()).find(Boolean);
-        if (first && fs.existsSync(first)) return first;
+        const first = result.split(/\r?\n/)
+          .map(s => s.trim())
+          .find(s => s && !s.startsWith('INFO:') && !s.startsWith('WARNING:') && fs.existsSync(s));
+        if (first) return first;
       } catch (_) {}
     }
     return null;
@@ -421,4 +452,7 @@ async function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate,
+  // exported for testing:
+  executableCandidates, firstExecutable, resolveGlobalCommand,
+  resolveScript, resolveRunner, formatAge };
