@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.3] - 2026-05-12
+
+### Fixed
+- **Critical**: Handle `spawn EINVAL` error on Windows extension activation (#8)
+- Validate command path exists before executing
+- Wrap execFile in try-catch to gracefully handle spawn errors
+- Extension now activates even if health check command fails
+
 ## [4.1.2] - 2026-05-12
 
 ### Added
