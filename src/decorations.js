@@ -59,7 +59,7 @@ function applyDecorations(root) {
   const ctxPaths = parseContextPaths(ctxFile);
 
   for (const editor of vscode.window.visibleTextEditors) {
-    const rel = path.relative(root, editor.document.uri.fsPath);
+    const rel = path.relative(root, editor.document.uri.fsPath).replace(/\\/g, '/');
     const isIncluded = ctxPaths.has(rel) ||
       [...ctxPaths].some(p => rel.endsWith(p) || p.endsWith(rel));
 
