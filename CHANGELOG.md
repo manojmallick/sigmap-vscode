@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.1.4] - 2026-05-12
+
+### Fixed
+- Remove extraneous closing bracket causing SyntaxError in v4.1.3 (#10)
+
 ## [4.1.3] - 2026-05-12
 
 ### Fixed
