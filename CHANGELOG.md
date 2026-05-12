@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.1] - 2026-05-12
+
+### Fixed
+- **Windows PowerShell 5.1 compatibility**: Use `;` instead of `&&` for command chaining in terminal, and add `&` prefix for proper command invocation syntax (#4)
+- **Windows gutter decorations**: Normalize path separators (backslash → forward slash) before comparison to fix green/grey indicator dots not appearing (#4)
+- **Windows status bar visibility**: Show status bar with "open a folder to activate" message when no workspace folder is open (#4)
+
 ## [4.1.0] - 2026-05-11
 
 ### Fixed
