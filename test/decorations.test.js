@@ -106,3 +106,181 @@ More text that mentions src/not-included.ts`;
     expect(typeof parseContextPaths).toBe('function');
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('applyDecorations', () => {
+  let mockVscode;
+
+  beforeEach(() => {
+    mockVscode = require('vscode');
+    jest.clearAllMocks();
+  });
+
+  test('applies GREEN decoration to included files', () => {
+    const content = `### src/index.ts`;
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(content);
+
+    const mockEditor = {
+      document: {
+        uri: { fsPath: '/workspace/src/index.ts' },
+        lineAt: jest.fn((n) => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    };
+    mockVscode.window.visibleTextEditors = [mockEditor];
+
+    const { applyDecorations, GREEN, GREY } = decs;
+    applyDecorations('/workspace');
+
+    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREEN, expect.any(Array));
+    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREY, []);
+  });
+
+  test('applies GREY decoration to excluded files', () => {
+    const content = `### src/included.ts`;
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(content);
+
+    const mockEditor = {
+      document: {
+        uri: { fsPath: '/workspace/src/excluded.ts' },
+        lineAt: jest.fn((n) => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    };
+    mockVscode.window.visibleTextEditors = [mockEditor];
+
+    const { applyDecorations, GREEN, GREY } = decs;
+    applyDecorations('/workspace');
+
+    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREEN, []);
+    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREY, expect.any(Array));
+  });
+
+  test('normalizes Windows backslash paths before comparison (regression test)', () => {
+    const content = `### src/index.ts`;
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(content);
+
+    // Simulate Windows path with backslashes
+    const mockEditor = {
+      document: {
+        uri: { fsPath: 'C:\\workspace\\src\\index.ts' },
+        lineAt: jest.fn((n) => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    };
+    mockVscode.window.visibleTextEditors = [mockEditor];
+
+    // Mock path.relative to return Windows-style path
+    const pathModule = require('path');
+    const originalRelative = pathModule.relative;
+    pathModule.relative = jest.fn(() => 'src\\index.ts');
+
+    const { applyDecorations, GREEN } = decs;
+    applyDecorations('C:\\workspace');
+
+    // Should recognize src\index.ts as matching src/index.ts
+    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREEN, expect.any(Array));
+
+    // Restore original
+    pathModule.relative = originalRelative;
+  });
+
+  test('handles empty visibleTextEditors list', () => {
+    const content = `### src/index.ts`;
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(content);
+
+    mockVscode.window.visibleTextEditors = [];
+
+    const { applyDecorations } = decs;
+    expect(() => applyDecorations('/workspace')).not.toThrow();
+  });
+
+  test('handles suffix matching for partial paths', () => {
+    const content = `### index.ts`;
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue(content);
+
+    const mockEditor = {
+      document: {
+        uri: { fsPath: '/workspace/src/index.ts' },
+        lineAt: jest.fn((n) => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    };
+    mockVscode.window.visibleTextEditors = [mockEditor];
+
+    const { applyDecorations, GREEN } = decs;
+    applyDecorations('/workspace');
+
+    // src/index.ts should match "index.ts" via endsWith logic
+    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREEN, expect.any(Array));
+  });
+
+  test('module exports applyDecorations and scheduleUpdate', () => {
+    expect(typeof decs.applyDecorations).toBe('function');
+    expect(typeof decs.scheduleUpdate).toBe('function');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('scheduleUpdate', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test('debounces calls to applyDecorations', () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue('### src/index.ts');
+
+    const mockVscode = require('vscode');
+    mockVscode.window.visibleTextEditors = [];
+
+    const { scheduleUpdate } = decs;
+
+    // Call scheduleUpdate multiple times
+    scheduleUpdate('/workspace');
+    scheduleUpdate('/workspace');
+    scheduleUpdate('/workspace');
+
+    // No execution yet
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+
+    // Fast-forward 2000ms
+    jest.advanceTimersByTime(2000);
+
+    // applyDecorations should have been called only once (debounced)
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  test('fires applyDecorations after 2000ms', () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue('### src/index.ts');
+
+    const mockVscode = require('vscode');
+    mockVscode.window.visibleTextEditors = [];
+
+    const { scheduleUpdate } = decs;
+    scheduleUpdate('/workspace');
+
+    // Before 2000ms
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+
+    // At 2000ms
+    jest.advanceTimersByTime(2000);
+    expect(fs.readFileSync).toHaveBeenCalled();
+  });
+});

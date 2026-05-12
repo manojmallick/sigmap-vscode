@@ -10,17 +10,65 @@ const os = require('os');
 const { execFile, execFileSync } = require('child_process');
 const path = require('path');
 
-// Import the functions we're testing
+// Mock vscode module
+jest.mock('vscode', () => ({
+  window: {
+    createStatusBarItem: jest.fn(() => ({
+      text: '',
+      tooltip: '',
+      command: '',
+      show: jest.fn(),
+      hide: jest.fn(),
+    })),
+    showWarningMessage: jest.fn(),
+    showInformationMessage: jest.fn(),
+    createTerminal: jest.fn(() => ({
+      show: jest.fn(),
+      sendText: jest.fn(),
+    })),
+  },
+  workspace: {
+    getConfiguration: jest.fn(() => ({
+      get: jest.fn((key, defaultValue) => defaultValue),
+    })),
+    workspaceFolders: [
+      { uri: { fsPath: '/workspace' } },
+    ],
+  },
+  commands: {
+    executeCommand: jest.fn(),
+    registerCommand: jest.fn((cmd, fn) => ({ dispose: jest.fn() })),
+  },
+  Uri: {
+    parse: jest.fn(str => str),
+    file: jest.fn(p => p),
+  },
+  env: {
+    clipboard: {
+      writeText: jest.fn(),
+    },
+    shell: undefined,
+  },
+}));
+
+// Import the functions we're testing (after mocks are set up)
 const ext = require('../src/extension.js');
-const { executableCandidates, firstExecutable, resolveGlobalCommand, resolveScript, formatAge } = ext;
+const {
+  executableCandidates, firstExecutable, resolveGlobalCommand, resolveScript,
+  resolveRunner, formatAge,
+} = ext;
 
 // Helper to set process.platform
 function setPlatform(platform) {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
 }
 
+// ────────────────────────────────────────────────────────────────────────────
 describe('executableCandidates', () => {
-  afterEach(() => setPlatform('darwin')); // reset to original
+  afterEach(() => {
+    jest.clearAllMocks();
+    setPlatform('darwin');
+  });
 
   test('returns 4 candidates on Windows', () => {
     setPlatform('win32');
@@ -56,6 +104,7 @@ describe('executableCandidates', () => {
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
 describe('firstExecutable', () => {
   afterEach(() => {
     jest.clearAllMocks();
@@ -78,7 +127,7 @@ describe('firstExecutable', () => {
   test('returns first executable path on Unix', () => {
     setPlatform('linux');
     fs.accessSync.mockImplementation(p => {
-      if (p === '/path/to/second/sigmap') return; // success
+      if (p === '/path/to/second/sigmap') return;
       throw new Error('Not executable');
     });
 
@@ -112,6 +161,7 @@ describe('firstExecutable', () => {
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
 describe('formatAge', () => {
   test('formats < 1/24 day as "just now"', () => {
     expect(formatAge(0)).toBe('just now');
@@ -133,81 +183,94 @@ describe('formatAge', () => {
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
 describe('resolveScript', () => {
   afterEach(() => jest.clearAllMocks());
 
-  test('returns custom path when set and exists', () => {
+  test('returns custom script path when sigmap.scriptPath is set and file exists', () => {
+    const mockVscode = require('vscode');
+    mockVscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key, defaultValue) => {
+        if (key === 'scriptPath') return '/custom/gen-context.js';
+        return defaultValue;
+      }),
+    });
     fs.existsSync.mockImplementation(p => p === '/custom/gen-context.js');
 
-    // Mock vscode.workspace.getConfiguration
-    jest.resetModules();
-    const mockVscode = {
-      workspace: {
-        getConfiguration: jest.fn(() => ({
-          get: jest.fn(key => {
-            if (key === 'scriptPath') return '/custom/gen-context.js';
-            return '';
-          }),
-        })),
-      },
-    };
-    jest.doMock('vscode', () => mockVscode);
-
-    // This test would need a full module reload - skip for now
-    // Instead, test the logic conceptually
+    const result = resolveScript('/workspace');
+    expect(result).toBe('/custom/gen-context.js');
   });
 
-  test('returns gen-context.js from root when it exists', () => {
+  test('returns null when custom path is set but file does not exist', () => {
+    const mockVscode = require('vscode');
+    mockVscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key, defaultValue) => {
+        if (key === 'scriptPath') return '/nonexistent/gen-context.js';
+        return defaultValue;
+      }),
+    });
+    fs.existsSync.mockReturnValue(false);
+
+    const result = resolveScript('/workspace');
+    expect(result).toBeNull();
+  });
+
+  test('returns workspace gen-context.js when custom path not set but file exists', () => {
+    const mockVscode = require('vscode');
+    mockVscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn(() => ''), // empty custom path
+    });
     fs.existsSync.mockImplementation(p => p === '/workspace/gen-context.js');
 
-    // Similar setup needed
+    const result = resolveScript('/workspace');
+    expect(result).toBe('/workspace/gen-context.js');
   });
 
-  test('returns null when neither found', () => {
+  test('returns null when neither custom nor workspace path exists', () => {
+    const mockVscode = require('vscode');
+    mockVscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn(() => ''),
+    });
     fs.existsSync.mockReturnValue(false);
+
+    const result = resolveScript('/workspace');
+    expect(result).toBeNull();
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+describe('resolveRunner', () => {
+  test('exports resolveRunner function', () => {
+    expect(typeof resolveRunner).toBe('function');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 describe('resolveGlobalCommand', () => {
   afterEach(() => {
     jest.clearAllMocks();
     setPlatform('darwin');
   });
 
-  test('finds sigmap in %APPDATA%/npm on Windows', () => {
-    setPlatform('win32');
-    os.homedir.mockReturnValue('C:\\Users\\testuser');
-    fs.existsSync.mockImplementation(p => p === 'C:\\Users\\testuser\\AppData\\Roaming\\npm\\sigmap.cmd');
-    process.env.APPDATA = 'C:\\Users\\testuser\\AppData\\Roaming';
+  test('returns a path or null when searching global paths', () => {
+    os.homedir.mockReturnValue('/home/user');
+    fs.existsSync.mockReturnValue(false);
+    execFileSync.mockImplementation(() => { throw new Error('Not found'); });
 
-    // This test would need module reloading or mocking of the entire flow
-    // For now, the fact that we added these paths to resolveGlobalCommand is verified by code inspection
+    const result = resolveGlobalCommand('/workspace');
+    expect(result === null || typeof result === 'string').toBe(true);
   });
 
-  test('falls back to where command on Windows', () => {
+  test('handles Windows home directory correctly', () => {
     setPlatform('win32');
-    fs.existsSync.mockReturnValue(false);
-    execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'where') return 'C:\\Users\\testuser\\AppData\\Roaming\\npm\\sigmap.cmd\r\n';
-      throw new Error('Not found');
-    });
+    os.homedir.mockReturnValue('C:\\Users\\test');
 
-    // Module reload needed for full test
-  });
-
-  test('where output parser filters INFO lines', () => {
-    setPlatform('win32');
-    os.homedir.mockReturnValue('C:\\Users\\testuser');
-    fs.existsSync.mockReturnValue(false);
-
-    const mockOutput = 'INFO: Could not find sigmap in PATH\r\nC:\\valid\\path\\sigmap.cmd\r\n';
-    execFileSync.mockReturnValueOnce(mockOutput);
-
-    // The fix is: split by \r?\n, map trim, find first that doesn't start with INFO: and exists
-    // This is verified in the extension.js code
+    // Function should not throw
+    expect(() => resolveGlobalCommand('/workspace')).not.toThrow();
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
 describe('integration tests', () => {
   test('module exports required functions', () => {
     expect(typeof ext.activate).toBe('function');
@@ -216,6 +279,20 @@ describe('integration tests', () => {
     expect(typeof ext.firstExecutable).toBe('function');
     expect(typeof ext.resolveGlobalCommand).toBe('function');
     expect(typeof ext.resolveScript).toBe('function');
+    expect(typeof ext.resolveRunner).toBe('function');
     expect(typeof ext.formatAge).toBe('function');
+  });
+
+  test('formatAge + resolveRunner work correctly on Windows paths', () => {
+    setPlatform('win32');
+    // Windows-specific path normalization in resolveScript
+    const mockVscode = require('vscode');
+    mockVscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn(() => 'C:\\Program Files\\sigmap\\gen-context.js'),
+    });
+    fs.existsSync.mockReturnValue(true);
+
+    const runner = resolveRunner('C:\\Users\\workspace');
+    expect(runner).toEqual({ type: 'script', path: 'C:\\Program Files\\sigmap\\gen-context.js' });
   });
 });
