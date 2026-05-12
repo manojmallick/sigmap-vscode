@@ -270,7 +270,6 @@ function getStatus(root, runner) {
         console.log('[SigMap] Error spawning command:', spawnErr.message);
         mtimeFallback(root, resolve);
       }
-      });
     } else {
       mtimeFallback(root, resolve);
     }
