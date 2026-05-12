@@ -210,9 +210,16 @@ function resolveGlobalCommand(root) {
  */
 function resolveRunner(root) {
   const script = resolveScript(root);
-  if (script) return { type: 'script', path: script };
+  if (script) {
+    console.log('[SigMap] Runner: local script found at', script);
+    return { type: 'script', path: script };
+  }
   const cmd = resolveGlobalCommand(root);
-  if (cmd) return { type: 'command', path: cmd };
+  if (cmd) {
+    console.log('[SigMap] Runner: global command found at', cmd);
+    return { type: 'command', path: cmd };
+  }
+  console.log('[SigMap] Runner: no script or command found (gen-context not installed globally)');
   return null;
 }
 
@@ -393,43 +400,59 @@ async function runRegenerate(root, runner) {
 
 /** @param {vscode.ExtensionContext} context */
 async function activate(context) {
+  console.log('[SigMap] ✓ Extension activated');
+
   const statusBar = createStatusBarItem();
   context.subscriptions.push(statusBar);
+  console.log('[SigMap] ✓ Status bar created');
 
   // Initial status bar update
+  const root = workspaceRoot();
+  console.log('[SigMap] Workspace root:', root || '(none)');
   await updateStatusBar(statusBar);
+  console.log('[SigMap] ✓ Status bar updated');
 
   // Refresh status bar on interval
   const interval = setInterval(() => updateStatusBar(statusBar), STATUS_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
+  console.log('[SigMap] ✓ Status bar refresh interval started');
 
   // Feature 2: gutter decorations — green (included) / grey (excluded)
   const decs = require('./decorations');
   context.subscriptions.push(decs.GREEN, decs.GREY);
-  const root = workspaceRoot();
+  console.log('[SigMap] ✓ Decorations loaded');
+
   if (root) {
+    console.log('[SigMap] Applying decorations to workspace:', root);
     decs.applyDecorations(root);
     vscode.window.onDidChangeActiveTextEditor(() => decs.scheduleUpdate(root), null, context.subscriptions);
+    console.log('[SigMap] ✓ Decorations applied, editor change listener registered');
+  } else {
+    console.log('[SigMap] No workspace root — decorations disabled');
   }
 
   // Refresh when workspace files change (i.e. context file regenerated)
   const watcher = vscode.workspace.createFileSystemWatcher('**/.github/copilot-instructions.md');
-  watcher.onDidChange(() => { updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
-  watcher.onDidCreate(() => { updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
+  watcher.onDidChange(() => { console.log('[SigMap] Context file changed'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
+  watcher.onDidCreate(() => { console.log('[SigMap] Context file created'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
   context.subscriptions.push(watcher);
+  console.log('[SigMap] ✓ File watcher registered');
 
   // Command: regenerate
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.regenerate', async () => {
+      console.log('[SigMap] Command: regenerate context');
       const root = workspaceRoot();
       const runner = resolveRunner(root);
       await runRegenerate(root, runner);
     })
   );
+  console.log('[SigMap] ✓ Command "sigmap.regenerate" registered');
 
   // Command: open context file
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.openContext', async () => {
+      console.log('[SigMap] Command: open context file');
       const root = workspaceRoot();
       if (!root) {
         vscode.window.showWarningMessage('SigMap: no workspace folder open.');
@@ -444,13 +467,17 @@ async function activate(context) {
       await vscode.window.showTextDocument(uri);
     })
   );
+  console.log('[SigMap] ✓ Command "sigmap.openContext" registered');
 
   // Stale check on activation (slight delay to not block startup)
   setTimeout(async () => {
+    console.log('[SigMap] Running stale context check...');
     const root = workspaceRoot();
     const runner = resolveRunner(root);
     await checkStaleContext(context, root, runner);
   }, 3000);
+
+  console.log('[SigMap] ✓ Extension fully activated');
 }
 
 function deactivate() {}
