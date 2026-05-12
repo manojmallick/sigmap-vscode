@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.1.2] - 2026-05-12
+
+### Added
+- Comprehensive startup and activation logs with `[SigMap]` prefix for debugging extension initialization issues
+- Log when workspace root is detected and status bar is updated
+- Log runner resolution (local script vs global command) to help diagnose sigmap installation problems
+- Log file watcher and decoration initialization status
+- Users can view logs in VS Code Output panel → "SigMap" dropdown
+
 ## [4.1.1] - 2026-05-12
 
 ### Fixed
