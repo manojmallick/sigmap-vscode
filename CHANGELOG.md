@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.1.5] - 2026-05-12
+
+### Added
+- **Comprehensive unit test suite**: 36 tests covering all critical functions (#11)
+  - `executableCandidates`, `firstExecutable`, `formatAge` — platform-specific path handling
+  - `parseContextPaths` — markdown parsing, whitespace handling, complex paths
+  - `applyDecorations`, `scheduleUpdate` — decoration logic with debounce tests
+  - **Windows regression test**: backslash path normalization in applyDecorations
+- **Automated CI pipeline** (.github/workflows/ci.yml):
+  - `node --check` syntax validation on every push (prevents bracket errors like v4.1.3)
+  - `npm test --coverage` runs tests and enforces 70% coverage thresholds
+  - Triggers on push to main and all pull_requests
+  - Coverage uploaded to codecov
+
+### Benefits
+- All future PRs must pass tests before merging
+- Syntax errors caught before release
+- 70% code coverage prevents untested logic from shipping
+- Platform-specific bugs (Windows path separators, spawn errors) detected early
+
 ## [4.1.4] - 2026-05-12
 
 ### Fixed
