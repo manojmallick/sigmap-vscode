@@ -236,27 +236,40 @@ function getStatus(root, runner) {
       const [cmd, args] = runner.type === 'script'
         ? [process.execPath, [runner.path, '--health', '--json']]
         : [runner.path, ['--health', '--json']];
-      execFile(cmd, args, { cwd: root, timeout: 8000 }, (err, stdout) => {
-        if (!err) {
-          try {
-            const data = JSON.parse(stdout.trim());
-            const ctxPath = path.join(root, CONTEXT_FILE);
-            let daysSince = null;
-            if (fs.existsSync(ctxPath)) {
-              const mtime = fs.statSync(ctxPath).mtimeMs;
-              daysSince = (Date.now() - mtime) / (1000 * 60 * 60 * 24);
-            }
-            return resolve({
-              grade:     data.grade     || 'A',
-              score:     data.score     || 100,
-              daysSince,
-              tokens:    data.tokens    || 0,
-              reduction: data.reduction || 0,
-            });
-          } catch (_) {}
-        }
-        // Fallback to mtime-only
+
+      // Validate command exists before executing
+      if (!fs.existsSync(cmd)) {
+        console.log('[SigMap] Warning: command does not exist:', cmd);
+        return mtimeFallback(root, resolve);
+      }
+
+      try {
+        execFile(cmd, args, { cwd: root, timeout: 8000 }, (err, stdout) => {
+          if (!err) {
+            try {
+              const data = JSON.parse(stdout.trim());
+              const ctxPath = path.join(root, CONTEXT_FILE);
+              let daysSince = null;
+              if (fs.existsSync(ctxPath)) {
+                const mtime = fs.statSync(ctxPath).mtimeMs;
+                daysSince = (Date.now() - mtime) / (1000 * 60 * 60 * 24);
+              }
+              return resolve({
+                grade:     data.grade     || 'A',
+                score:     data.score     || 100,
+                daysSince,
+                tokens:    data.tokens    || 0,
+                reduction: data.reduction || 0,
+              });
+            } catch (_) {}
+          }
+          // Fallback to mtime-only
+          mtimeFallback(root, resolve);
+        });
+      } catch (spawnErr) {
+        console.log('[SigMap] Error spawning command:', spawnErr.message);
         mtimeFallback(root, resolve);
+      }
       });
     } else {
       mtimeFallback(root, resolve);
