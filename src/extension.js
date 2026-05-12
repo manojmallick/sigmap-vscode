@@ -291,7 +291,9 @@ async function updateStatusBar(statusBar) {
   const runner = resolveRunner(root);
 
   if (!root) {
-    statusBar.hide();
+    statusBar.text = '$(file-code) SigMap';
+    statusBar.tooltip = 'SigMap: open a folder to activate';
+    statusBar.show();
     return;
   }
 
@@ -379,11 +381,12 @@ async function runRegenerate(root, runner) {
 
   const cmd = runner.type === 'script'
     ? `node "${runner.path}"`
-    : `"${runner.path}"`;
+    : isWindows() ? `& "${runner.path}"` : `"${runner.path}"`;
 
+  const suffix = isWindows() ? `; echo "[SigMap] done"` : `&& echo "[SigMap] done"`;
   const terminal = vscode.window.createTerminal({ name: 'SigMap', cwd: root });
   terminal.show(true); // show but don't steal focus
-  terminal.sendText(`${cmd} && echo "[SigMap] done"`);
+  terminal.sendText(`${cmd}${suffix}`);
 }
 
 // ── Activation ────────────────────────────────────────────────────────────────
