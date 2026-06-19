@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.2.0] - 2026-06-19
+
+### Added
+- **SigMap: Query Context command** (#14): query your codebase from inside the editor.
+  - Prompts for a query, runs `sigmap --query "<text>" --json --top 10` through the existing runner resolution.
+  - Shows ranked files in a QuickPick (score · token count · signature preview); selecting one opens the file.
+  - New pure helpers `buildQueryArgs` / `parseQueryResults` (unit tested).
+- Expanded test suite: behavioral coverage for `runQuery`, `getStatus`, `runRegenerate`, `updateStatusBar`, `checkStaleContext`, and activation command callbacks — coverage now 84% statements / 75% branches / 72% functions / 89% lines (70% gate restored to green).
+
 ## [4.1.5] - 2026-05-12
 
 ### Added
