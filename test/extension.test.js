@@ -22,6 +22,9 @@ jest.mock('vscode', () => ({
     })),
     showWarningMessage: jest.fn(),
     showInformationMessage: jest.fn(),
+    showInputBox: jest.fn(),
+    showQuickPick: jest.fn(),
+    showTextDocument: jest.fn(),
     createTerminal: jest.fn(() => ({
       show: jest.fn(),
       sendText: jest.fn(),
@@ -56,7 +59,22 @@ const ext = require('../src/extension.js');
 const {
   executableCandidates, firstExecutable, resolveGlobalCommand, resolveScript,
   resolveRunner, formatAge, buildQueryArgs, parseQueryResults,
+  getStatus, mtimeFallback, updateStatusBar, runRegenerate, runQuery,
+  checkStaleContext, suppressionKey,
 } = ext;
+
+// Shared handle to the mocked vscode module.
+const vscode = require('vscode');
+
+/** Reset the vscode UI mocks to a clean slate between behavioral tests. */
+function resetVscodeMocks() {
+  vscode.window.showWarningMessage.mockReset();
+  vscode.window.showInformationMessage.mockReset();
+  vscode.window.showInputBox.mockReset();
+  vscode.window.showQuickPick.mockReset();
+  vscode.window.showTextDocument.mockReset();
+  vscode.window.createTerminal.mockClear();
+}
 
 // Helper to set process.platform
 function setPlatform(platform) {
@@ -323,7 +341,211 @@ describe('parseQueryResults', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+describe('runQuery', () => {
+  const runner = { type: 'command', path: '/usr/local/bin/sigmap' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetVscodeMocks();
+    setPlatform('darwin');
+    fs.existsSync.mockReturnValue(true); // binary + query both "exist"
+  });
+
+  test('warns and exits when there is no workspace root', async () => {
+    await runQuery(null, runner);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('no workspace folder'));
+    expect(vscode.window.showInputBox).not.toHaveBeenCalled();
+  });
+
+  test('warns and exits when no runner is resolved', async () => {
+    await runQuery('/workspace', null);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('command not found'));
+    expect(vscode.window.showInputBox).not.toHaveBeenCalled();
+  });
+
+  test('does nothing when the query input is empty or cancelled', async () => {
+    vscode.window.showInputBox.mockResolvedValue('   ');
+    await runQuery('/workspace', runner);
+    expect(execFile).not.toHaveBeenCalled();
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  test('shows an info message when the query returns no results', async () => {
+    vscode.window.showInputBox.mockResolvedValue('auth');
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null, JSON.stringify({ results: [] })));
+    await runQuery('/workspace', runner);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('no results'));
+    expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  test('treats an execFile error as no results', async () => {
+    vscode.window.showInputBox.mockResolvedValue('auth');
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('boom'), ''));
+    await runQuery('/workspace', runner);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('no results'));
+  });
+
+  test('opens the selected file from the ranked QuickPick', async () => {
+    vscode.window.showInputBox.mockResolvedValue('auth');
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null, JSON.stringify({
+      results: [{ rank: 1, file: 'src/auth.js', score: 3, sigs: ['function login()'], tokens: 42 }],
+    })));
+    vscode.window.showQuickPick.mockResolvedValue({ label: 'src/auth.js', file: 'src/auth.js' });
+
+    await runQuery('/workspace', runner);
+
+    const items = vscode.window.showQuickPick.mock.calls[0][0];
+    expect(items[0]).toMatchObject({ label: 'src/auth.js', file: 'src/auth.js' });
+    expect(vscode.window.showTextDocument).toHaveBeenCalledWith(path.join('/workspace', 'src/auth.js'));
+  });
+
+  test('does not open a file when the QuickPick is dismissed', async () => {
+    vscode.window.showInputBox.mockResolvedValue('auth');
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null, JSON.stringify({
+      results: [{ rank: 1, file: 'src/auth.js', score: 3, sigs: [], tokens: 42 }],
+    })));
+    vscode.window.showQuickPick.mockResolvedValue(undefined);
+
+    await runQuery('/workspace', runner);
+    expect(vscode.window.showTextDocument).not.toHaveBeenCalled();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('getStatus / mtimeFallback', () => {
+  const runner = { type: 'command', path: '/bin/sigmap' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setPlatform('darwin');
+  });
+
+  test('resolves null when there is no root', async () => {
+    await expect(getStatus(null, runner)).resolves.toBeNull();
+  });
+
+  test('parses --health --json output into a status object', async () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: 1000 });
+    execFile.mockImplementation((cmd, args, opts, cb) =>
+      cb(null, JSON.stringify({ grade: 'B', score: 80, tokens: 1200, reduction: 90 })));
+
+    const status = await getStatus('/workspace', runner);
+    expect(status).toMatchObject({ grade: 'B', score: 80, tokens: 1200, reduction: 90 });
+    expect(typeof status.daysSince).toBe('number');
+  });
+
+  test('falls back to mtime when --health fails', async () => {
+    // command exists, but execFile errors → mtimeFallback; no context file → null
+    fs.existsSync.mockImplementation(p => p === '/bin/sigmap');
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('nope'), ''));
+    const status = await getStatus('/workspace', runner);
+    expect(status).toBeNull();
+  });
+
+  test('mtimeFallback returns grade A when a context file exists', () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: 1000 });
+    return new Promise((resolve) => {
+      mtimeFallback('/workspace', (status) => {
+        expect(status).toMatchObject({ grade: 'A', score: 100 });
+        resolve();
+      });
+    });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('runRegenerate', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetVscodeMocks();
+    setPlatform('darwin');
+  });
+
+  test('warns when there is no root', async () => {
+    await runRegenerate(null, { type: 'command', path: '/bin/sigmap' });
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('no workspace folder'));
+  });
+
+  test('offers install help when no runner is found', async () => {
+    vscode.window.showWarningMessage.mockResolvedValue('Copy install command');
+    await runRegenerate('/workspace', null);
+    expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('npm install -g sigmap');
+  });
+
+  test('launches a terminal for a resolved runner', async () => {
+    const term = { show: jest.fn(), sendText: jest.fn() };
+    vscode.window.createTerminal.mockReturnValue(term);
+    await runRegenerate('/workspace', { type: 'command', path: '/bin/sigmap' });
+    expect(vscode.window.createTerminal).toHaveBeenCalled();
+    expect(term.sendText).toHaveBeenCalledWith(expect.stringContaining('/bin/sigmap'));
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('updateStatusBar', () => {
+  let statusBar;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setPlatform('darwin');
+    os.homedir.mockReturnValue('/home/user');
+    statusBar = { text: '', tooltip: '', show: jest.fn() };
+    vscode.workspace.getConfiguration.mockReturnValue({ get: jest.fn((k, d) => d) });
+  });
+
+  test('shows a generic label when no folder is open', async () => {
+    vscode.workspace.workspaceFolders = undefined;
+    await updateStatusBar(statusBar);
+    expect(statusBar.text).toContain('SigMap');
+    expect(statusBar.show).toHaveBeenCalled();
+  });
+
+  test('shows "no context" when nothing resolves', async () => {
+    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/workspace' } }];
+    fs.existsSync.mockReturnValue(false); // no runner, no context file
+    await updateStatusBar(statusBar);
+    expect(statusBar.text).toContain('no context');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('checkStaleContext / suppressionKey', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetVscodeMocks();
+    setPlatform('darwin');
+  });
+
+  test('suppressionKey is deterministic and namespaced', () => {
+    const k = suppressionKey('/workspace');
+    expect(k).toMatch(/^cf\.stale\.suppress\./);
+    expect(suppressionKey('/workspace')).toBe(k);
+  });
+
+  test('does nothing when the context file is missing', async () => {
+    fs.existsSync.mockReturnValue(false);
+    await checkStaleContext({ workspaceState: { get: jest.fn(), update: jest.fn() } }, '/workspace', null);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('prompts and records suppression on "Don\'t show again"', async () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: 1000 }); // very old → stale
+    vscode.window.showInformationMessage.mockResolvedValue("Don't show again");
+    const update = jest.fn();
+    await checkStaleContext({ workspaceState: { get: jest.fn(() => false), update } }, '/workspace', null);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(expect.any(String), true);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 describe('integration tests', () => {
+  test('deactivate runs without error', () => {
+    expect(ext.deactivate()).toBeUndefined();
+  });
+
   test('module exports required functions', () => {
     expect(typeof ext.activate).toBe('function');
     expect(typeof ext.deactivate).toBe('function');
@@ -363,8 +585,38 @@ describe('integration tests', () => {
     jest.useFakeTimers(); // keep the refresh interval + stale-check timer from firing after teardown
     try {
       await ext.activate({ subscriptions: [] });
-      const registered = mockVscode.commands.registerCommand.mock.calls.map(c => c[0]);
+      const calls = mockVscode.commands.registerCommand.mock.calls;
+      const registered = calls.map(c => c[0]);
       expect(registered).toContain('sigmap.queryContext');
+
+      // Invoke each registered command callback to cover their bodies.
+      const handlers = Object.fromEntries(calls.map(c => [c[0], c[1]]));
+      mockVscode.window.showInputBox.mockResolvedValue(''); // queryContext → empty input → returns
+      await handlers['sigmap.queryContext']();
+      await handlers['sigmap.regenerate']();   // no runner → warning branch
+      await handlers['sigmap.openContext']();  // fs.existsSync(ctx) false → warning branch
+      expect(mockVscode.window.showWarningMessage).toHaveBeenCalled();
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  test('openContext opens the context file when it exists', async () => {
+    resetVscodeMocks();
+    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/workspace' } }];
+    fs.existsSync.mockReturnValue(true);
+    fs.readFileSync.mockReturnValue('### src/a.js\n'); // decorations reads the context file during activate
+    vscode.commands.registerCommand.mockClear();
+    jest.useFakeTimers();
+    try {
+      os.homedir.mockReturnValue('/home/user');
+      await ext.activate({ subscriptions: [] });
+      const handlers = Object.fromEntries(
+        vscode.commands.registerCommand.mock.calls.map(c => [c[0], c[1]])
+      );
+      await handlers['sigmap.openContext']();
+      expect(vscode.window.showTextDocument).toHaveBeenCalled();
     } finally {
       jest.clearAllTimers();
       jest.useRealTimers();

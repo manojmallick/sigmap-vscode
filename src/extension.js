@@ -604,4 +604,6 @@ function deactivate() {}
 module.exports = { activate, deactivate,
   // exported for testing:
   executableCandidates, firstExecutable, resolveGlobalCommand,
-  resolveScript, resolveRunner, formatAge, buildQueryArgs, parseQueryResults };
+  resolveScript, resolveRunner, formatAge, buildQueryArgs, parseQueryResults,
+  getStatus, mtimeFallback, updateStatusBar, runRegenerate, runQuery,
+  checkStaleContext, suppressionKey };
