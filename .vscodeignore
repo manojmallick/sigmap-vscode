@@ -9,3 +9,9 @@ tests/
 *.vsix
 node_modules/
 .git/
+
+# Cursor plugin (separate marketplace — not part of the VS Code extension)
+.cursor-plugin/
+plugins/
+scripts/validate-template.mjs
+IMPROVEMENT_PLAN.md

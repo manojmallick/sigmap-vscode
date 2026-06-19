@@ -1,0 +1,18 @@
+{
+  "name": "sigmap-plugins",
+  "owner": {
+    "name": "Manoj Mallick",
+    "email": "zzphandyman@gmail.com"
+  },
+  "metadata": {
+    "description": "SigMap — zero-dependency AI context engine for Cursor. Serves compact code signatures to the agent on demand.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "sigmap",
+      "source": "./plugins/sigmap",
+      "description": "96.9% token reduction. Extracts code signatures from 29 languages and serves them to Cursor's agent on demand via MCP."
+    }
+  ]
+}
