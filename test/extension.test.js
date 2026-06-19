@@ -55,7 +55,7 @@ jest.mock('vscode', () => ({
 const ext = require('../src/extension.js');
 const {
   executableCandidates, firstExecutable, resolveGlobalCommand, resolveScript,
-  resolveRunner, formatAge,
+  resolveRunner, formatAge, buildQueryArgs, parseQueryResults,
 } = ext;
 
 // Helper to set process.platform
@@ -271,6 +271,58 @@ describe('resolveGlobalCommand', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+describe('buildQueryArgs', () => {
+  test('builds node-invoked args for a script runner', () => {
+    const [cmd, args] = buildQueryArgs({ type: 'script', path: '/ws/gen-context.js' }, 'auth flow', 10);
+    expect(cmd).toBe(process.execPath);
+    expect(args).toEqual(['/ws/gen-context.js', '--query', 'auth flow', '--json', '--top', '10']);
+  });
+
+  test('builds direct binary args for a command runner', () => {
+    const [cmd, args] = buildQueryArgs({ type: 'command', path: '/usr/local/bin/sigmap' }, 'status bar', 5);
+    expect(cmd).toBe('/usr/local/bin/sigmap');
+    expect(args).toEqual(['--query', 'status bar', '--json', '--top', '5']);
+  });
+
+  test('coerces a numeric top to a string', () => {
+    const [, args] = buildQueryArgs({ type: 'command', path: 'sigmap' }, 'x', 3);
+    expect(args[args.length - 1]).toBe('3');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('parseQueryResults', () => {
+  test('parses ranked results from valid --query --json output', () => {
+    const stdout = JSON.stringify({
+      query: 'auth',
+      results: [
+        { rank: 1, file: 'src/auth.js', score: 3, sigs: ['function login()'], tokens: 42 },
+        { rank: 2, file: 'src/token.js', score: 1, sigs: [], tokens: 10 },
+      ],
+    });
+    const out = parseQueryResults(stdout);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ rank: 1, file: 'src/auth.js', score: 3, sigs: ['function login()'], tokens: 42 });
+    expect(out[1].sigs).toEqual([]);
+  });
+
+  test('tolerates surrounding whitespace', () => {
+    const out = parseQueryResults('\n  {"results":[{"rank":1,"file":"a.js","score":0}]}  \n');
+    expect(out).toHaveLength(1);
+    expect(out[0].file).toBe('a.js');
+    expect(out[0].sigs).toEqual([]); // missing sigs defaults to []
+    expect(out[0].tokens).toBe(0);   // missing tokens defaults to 0
+  });
+
+  test('returns [] for empty, malformed, or resultless output', () => {
+    expect(parseQueryResults('')).toEqual([]);
+    expect(parseQueryResults('not json')).toEqual([]);
+    expect(parseQueryResults('{}')).toEqual([]);
+    expect(parseQueryResults('{"results":"nope"}')).toEqual([]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 describe('integration tests', () => {
   test('module exports required functions', () => {
     expect(typeof ext.activate).toBe('function');
@@ -281,6 +333,42 @@ describe('integration tests', () => {
     expect(typeof ext.resolveScript).toBe('function');
     expect(typeof ext.resolveRunner).toBe('function');
     expect(typeof ext.formatAge).toBe('function');
+    expect(typeof ext.buildQueryArgs).toBe('function');
+    expect(typeof ext.parseQueryResults).toBe('function');
+  });
+
+  test('registers sigmap.queryContext during activation', async () => {
+    setPlatform('darwin');
+    // Stateful mock impls leak from earlier tests — pin the ones activate() touches.
+    fs.existsSync.mockReturnValue(false); // no runner found → no execFile spawn
+    os.homedir.mockReturnValue('/home/user');
+    execFileSync.mockImplementation(() => { throw new Error('not found'); });
+
+    // Augment the minimal vscode mock with the APIs activate() + decorations use.
+    const mockVscode = require('vscode');
+    mockVscode.window.createStatusBarItem.mockReturnValue({ text: '', tooltip: '', command: '', show: jest.fn() });
+    mockVscode.window.createTextEditorDecorationType = jest.fn(() => ({ dispose: jest.fn() }));
+    mockVscode.window.onDidChangeActiveTextEditor = jest.fn(() => ({ dispose: jest.fn() }));
+    mockVscode.window.visibleTextEditors = [];
+    mockVscode.workspace.createFileSystemWatcher = jest.fn(() => ({
+      onDidChange: jest.fn(), onDidCreate: jest.fn(), dispose: jest.fn(),
+    }));
+    mockVscode.workspace.getConfiguration.mockReturnValue({ get: jest.fn((key, def) => def) });
+    mockVscode.StatusBarAlignment = { Left: 0, Right: 1 };
+    mockVscode.OverviewRulerLane = { Left: 1, Center: 2, Right: 4, Full: 7 };
+    mockVscode.Range = jest.fn((a, b) => ({ start: a, end: b }));
+    mockVscode.Uri.parse = jest.fn(s => s);
+    mockVscode.commands.registerCommand.mockClear();
+
+    jest.useFakeTimers(); // keep the refresh interval + stale-check timer from firing after teardown
+    try {
+      await ext.activate({ subscriptions: [] });
+      const registered = mockVscode.commands.registerCommand.mock.calls.map(c => c[0]);
+      expect(registered).toContain('sigmap.queryContext');
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 
   test('formatAge + resolveRunner work correctly on Windows paths', () => {

@@ -24,6 +24,7 @@ const CONTEXT_FILE = '.github/copilot-instructions.md';
 const STALE_HOURS = 24;
 const STATUS_INTERVAL_MS = 60 * 1000; // refresh status bar every 60 s
 const EXECUTABLE_NAMES = ['sigmap', 'gen-context'];
+const QUERY_TOP = 10; // default number of ranked files for SigMap: Query Context
 
 // Grade ≥ 90 → A, ≥ 75 → B, ≥ 60 → C, < 60 → D
 const GRADE_ICONS = { A: '$(check) A', B: '$(info) B', C: '$(warning) C', D: '$(error) D' };
@@ -296,6 +297,101 @@ function formatAge(daysSince) {
   return `${d}d ago`;
 }
 
+// ── Query context ───────────────────────────────────────────────────────────────
+
+/**
+ * Build the execFile [cmd, args] pair for `--query "<text>" --json --top <n>`,
+ * mirroring getStatus: script runners go through `node <path>`, command runners
+ * invoke the binary directly.
+ *
+ * @returns {[string, string[]]} [command, args]
+ */
+function buildQueryArgs(runner, text, top) {
+  const flags = ['--query', text, '--json', '--top', String(top)];
+  return runner.type === 'script'
+    ? [process.execPath, [runner.path, ...flags]]
+    : [runner.path, flags];
+}
+
+/**
+ * Parse the JSON emitted by `--query <text> --json` into a list of ranked
+ * results. Returns [] on empty or malformed output so callers can degrade
+ * gracefully.
+ *
+ * @returns {Array<{rank:number, file:string, score:number, sigs:string[], tokens:number}>}
+ */
+function parseQueryResults(stdout) {
+  try {
+    const data = JSON.parse(String(stdout).trim());
+    if (!data || !Array.isArray(data.results)) return [];
+    return data.results.map(r => ({
+      rank:   r.rank,
+      file:   r.file,
+      score:  r.score,
+      sigs:   Array.isArray(r.sigs) ? r.sigs : [],
+      tokens: r.tokens || 0,
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Prompt for a query, run it through the resolved runner, and present the
+ * ranked files in a QuickPick. Selecting a result opens that file.
+ */
+async function runQuery(root, runner) {
+  if (!root) {
+    vscode.window.showWarningMessage('SigMap: no workspace folder open.');
+    return;
+  }
+  if (!runner) {
+    vscode.window.showWarningMessage('SigMap: command not found. Install with `npm install -g sigmap` or set sigmap.scriptPath.');
+    return;
+  }
+
+  const text = await vscode.window.showInputBox({
+    prompt: 'SigMap: query your codebase',
+    placeHolder: 'e.g. authentication flow',
+  });
+  if (!text || !text.trim()) return;
+
+  const [cmd, args] = buildQueryArgs(runner, text.trim(), QUERY_TOP);
+  if (!fs.existsSync(cmd)) {
+    vscode.window.showWarningMessage('SigMap: command not found.');
+    return;
+  }
+
+  const results = await new Promise((resolve) => {
+    try {
+      execFile(cmd, args, { cwd: root, timeout: 15000 }, (err, stdout) => {
+        resolve(err ? [] : parseQueryResults(stdout));
+      });
+    } catch (_) {
+      resolve([]);
+    }
+  });
+
+  if (!results.length) {
+    vscode.window.showInformationMessage(`SigMap: no results for "${text.trim()}".`);
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    results.map(r => ({
+      label: r.file,
+      description: `score ${r.score} · ${r.tokens} tok`,
+      detail: r.sigs.slice(0, 3).join('  ·  '),
+      file: r.file,
+    })),
+    { placeHolder: `SigMap results for "${text.trim()}" — select to open`, matchOnDetail: true }
+  );
+  if (!picked) return;
+
+  const uri = vscode.Uri.file(path.join(root, picked.file));
+  await vscode.window.showTextDocument(uri);
+}
+
 // ── Status bar ────────────────────────────────────────────────────────────────
 
 function createStatusBarItem() {
@@ -481,6 +577,17 @@ async function activate(context) {
   );
   console.log('[SigMap] ✓ Command "sigmap.openContext" registered');
 
+  // Command: query context
+  context.subscriptions.push(
+    vscode.commands.registerCommand('sigmap.queryContext', async () => {
+      console.log('[SigMap] Command: query context');
+      const root = workspaceRoot();
+      const runner = resolveRunner(root);
+      await runQuery(root, runner);
+    })
+  );
+  console.log('[SigMap] ✓ Command "sigmap.queryContext" registered');
+
   // Stale check on activation (slight delay to not block startup)
   setTimeout(async () => {
     console.log('[SigMap] Running stale context check...');
@@ -497,4 +604,4 @@ function deactivate() {}
 module.exports = { activate, deactivate,
   // exported for testing:
   executableCandidates, firstExecutable, resolveGlobalCommand,
-  resolveScript, resolveRunner, formatAge };
+  resolveScript, resolveRunner, formatAge, buildQueryArgs, parseQueryResults };

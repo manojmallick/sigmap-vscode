@@ -53,6 +53,10 @@
       {
         "command": "sigmap.openContext",
         "title": "SigMap: Open Context File"
+      },
+      {
+        "command": "sigmap.queryContext",
+        "title": "SigMap: Query Context"
       }
     ],
     "configuration": {
