@@ -10,3 +10,9 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+IMPROVEMENT_PLAN.md
+
+# Generated artifacts
+coverage/
+.context/
+.github/copilot-instructions.md

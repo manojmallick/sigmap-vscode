@@ -15,3 +15,10 @@ node_modules/
 plugins/
 scripts/validate-template.mjs
 IMPROVEMENT_PLAN.md
+
+# Generated artifacts
+coverage/
+.context/
+.github/copilot-instructions.md
+.claude/
+.vscode/
