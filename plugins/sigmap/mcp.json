@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sigmap": {
+      "command": "npx",
+      "args": ["-y", "sigmap@latest", "--mcp"]
+    }
+  }
+}

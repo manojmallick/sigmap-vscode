@@ -1,0 +1,26 @@
+---
+description: Use the SigMap signature map as primary codebase context before reading or searching files
+alwaysApply: true
+---
+
+# SigMap context
+
+This workspace is indexed by SigMap, which exposes a compact **signature map** of the
+codebase (function/class/type signatures across 29 languages) through the `sigmap` MCP
+server. Prefer it over blind file reads or full-text grep when you need to understand
+project structure — it is far cheaper in tokens and gives a whole-repo view.
+
+## When answering questions about this codebase
+
+1. **Orient first** — call the `sigmap` MCP tools to locate relevant symbols:
+   - `search_signatures` / `query_context` — find functions, classes, types by name or intent.
+   - `read_context` / `list_modules` — get the high-level module and export structure.
+   - `explain_file` — get a file's signatures, imports, and callers without reading it fully.
+   - `get_impact` — see what a change to a file would affect before editing it.
+2. **Read narrowly** — only open the specific files the signature map points you to,
+   instead of scanning directories.
+3. **Trust the map for breadth** — when asked "where is X" or "what calls Y", consult
+   SigMap before grepping the entire tree.
+
+If the signature map looks stale or missing, regenerate it with the
+`generate-context` skill (`npx sigmap`) before relying on it.

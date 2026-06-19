@@ -1,0 +1,25 @@
+{
+  "name": "sigmap",
+  "displayName": "SigMap — AI Context Engine",
+  "version": "1.0.0",
+  "description": "96.9% token reduction for Cursor's agent. Extracts a compact signature map of your codebase (29 languages) and serves it on demand via an MCP server — so the agent starts every task knowing your project.",
+  "author": {
+    "name": "Manoj Mallick",
+    "email": "zzphandyman@gmail.com"
+  },
+  "homepage": "https://manojmallick.github.io/sigmap/",
+  "repository": "https://github.com/manojmallick/sigmap-vscode",
+  "license": "MIT",
+  "keywords": [
+    "cursor",
+    "context",
+    "mcp",
+    "token-reduction",
+    "code-signatures",
+    "ai",
+    "copilot",
+    "claude",
+    "codebase-context"
+  ],
+  "logo": "assets/logo.png"
+}
