@@ -2,10 +2,10 @@
   "name": "sigmap",
   "displayName": "SigMap — AI Context Engine",
   "description": "96.9% token reduction for Copilot, Claude & Cursor. Extracts code signatures from 33 languages into copilot-instructions.md automatically.",
-  "version": "4.2.1",
+  "version": "4.3.0",
   "publisher": "manojmallick",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.101.0"
   },
   "icon": "icon.png",
   "categories": [
@@ -45,6 +45,39 @@
   ],
   "main": "./src/extension.js",
   "contributes": {
+    "languageModelTools": [
+      {
+        "name": "sigmap_query",
+        "displayName": "SigMap Query",
+        "toolReferenceName": "sigmap",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(file-code)",
+        "userDescription": "Rank the most relevant workspace files for a task using SigMap's code-signature index",
+        "modelDescription": "Ranks the most relevant files in the current workspace for a natural-language query using SigMap's code-signature index (function/class signatures, not full text). Returns the top files with their key signatures. Call this BEFORE grep/file searches to locate where functionality lives — it is faster and far cheaper than reading files.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Natural-language description of the code to find, e.g. 'where is authentication handled'"
+            },
+            "top": {
+              "type": "number",
+              "description": "Maximum number of ranked files to return (default 10, max 25)"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "sigmap.mcpServers",
+        "label": "SigMap MCP"
+      }
+    ],
     "commands": [
       {
         "command": "sigmap.regenerate",

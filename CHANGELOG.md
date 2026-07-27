@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.3.0] - 2026-07-28
+
+### Added
+- **`sigmap_query` Language Model Tool** (#18): Copilot agent mode can now call SigMap's ranked retrieval automatically (and users can reference it in chat as `#sigmap`). Input `{ query, top? }`; returns the top-ranked workspace files with their key signatures via the existing runner resolution — no workspace/CLI degrades into an actionable text answer, never a throw.
+- **One-click MCP registration** (#18): an MCP server definition provider offers the resolved sigmap CLI as a stdio server (`--mcp`) — no manual `mcp.json` editing.
+- Shared `runQueryJson` helper backing both the QuickPick command and the LM tool.
+
+### Changed
+- `engines.vscode` raised `^1.85.0` → `^1.101.0` (first stable release of both `vscode.lm` APIs). Both integrations are feature-detected, so activation still succeeds on hosts without `vscode.lm`.
+
 ## [4.2.1] - 2026-07-28
 
 ### Fixed
