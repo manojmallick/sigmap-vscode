@@ -424,6 +424,25 @@ function parseQueryResults(stdout) {
 }
 
 /**
+ * Run `--query <text> --json` through a resolved runner and return the parsed
+ * ranked results ([] on any failure). Shared by the QuickPick command and the
+ * sigmap_query language model tool.
+ */
+function runQueryJson(root, runner, text, top) {
+  const [cmd, args] = buildQueryArgs(runner, text, top);
+  if (!fs.existsSync(cmd)) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    try {
+      execFile(cmd, args, { cwd: root, timeout: 15000 }, (err, stdout) => {
+        resolve(err ? [] : parseQueryResults(stdout));
+      });
+    } catch (_) {
+      resolve([]);
+    }
+  });
+}
+
+/**
  * Prompt for a query, run it through the resolved runner, and present the
  * ranked files in a QuickPick. Selecting a result opens that file.
  */
@@ -443,21 +462,7 @@ async function runQuery(root, runner) {
   });
   if (!text || !text.trim()) return;
 
-  const [cmd, args] = buildQueryArgs(runner, text.trim(), QUERY_TOP);
-  if (!fs.existsSync(cmd)) {
-    vscode.window.showWarningMessage('SigMap: command not found.');
-    return;
-  }
-
-  const results = await new Promise((resolve) => {
-    try {
-      execFile(cmd, args, { cwd: root, timeout: 15000 }, (err, stdout) => {
-        resolve(err ? [] : parseQueryResults(stdout));
-      });
-    } catch (_) {
-      resolve([]);
-    }
-  });
+  const results = await runQueryJson(root, runner, text.trim(), QUERY_TOP);
 
   if (!results.length) {
     vscode.window.showInformationMessage(`SigMap: no results for "${text.trim()}".`);
@@ -716,6 +721,15 @@ async function activate(context) {
     })
   );
 
+  // AI-native integrations: sigmap_query LM tool + MCP server definition
+  // provider (feature-detected — no-ops on hosts without vscode.lm).
+  try {
+    const ai = require('./aiIntegrations');
+    ai.registerAiIntegrations(context, { workspaceRoot, ensureRunner, runQueryJson, log });
+  } catch (e) {
+    log(`AI integrations failed to register: ${e.message}`);
+  }
+
   // Stale check on activation (slight delay to not block startup)
   setTimeout(async () => {
     const root = workspaceRoot();
@@ -739,6 +753,6 @@ module.exports = { activate, deactivate,
   // exported for testing:
   executableCandidates, firstExecutable, resolveGlobalCommand,
   resolveScript, resolveRunner, ensureRunner, probeShellOnce, formatAge,
-  gradeFromAge, buildQueryArgs, parseQueryResults,
+  gradeFromAge, buildQueryArgs, parseQueryResults, runQueryJson,
   getStatus, mtimeFallback, updateStatusBar, runRegenerate, runQuery,
   checkStaleContext, suppressionKey, _resetInternalState };
