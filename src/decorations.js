@@ -60,8 +60,9 @@ function applyDecorations(root) {
 
   for (const editor of vscode.window.visibleTextEditors) {
     const rel = path.relative(root, editor.document.uri.fsPath).replace(/\\/g, '/');
-    const isIncluded = ctxPaths.has(rel) ||
-      [...ctxPaths].some(p => rel.endsWith(p) || p.endsWith(rel));
+    // Exact workspace-relative match only — suffix matching lit up every
+    // same-named file (e.g. any index.ts) in multi-package repos.
+    const isIncluded = ctxPaths.has(rel);
 
     editor.setDecorations(GREEN, isIncluded ? [fullRange(editor)] : []);
     editor.setDecorations(GREY,  isIncluded ? [] : [fullRange(editor)]);

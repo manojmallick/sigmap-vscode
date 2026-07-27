@@ -22,6 +22,7 @@ jest.mock('vscode', () => ({
     })),
     showWarningMessage: jest.fn(),
     showInformationMessage: jest.fn(),
+    showErrorMessage: jest.fn(),
     showInputBox: jest.fn(),
     showQuickPick: jest.fn(),
     showTextDocument: jest.fn(),
@@ -29,7 +30,15 @@ jest.mock('vscode', () => ({
       show: jest.fn(),
       sendText: jest.fn(),
     })),
+    createOutputChannel: jest.fn(() => ({
+      appendLine: jest.fn(),
+      show: jest.fn(),
+      dispose: jest.fn(),
+    })),
+    withProgress: jest.fn((_opts, task) =>
+      task({ report: jest.fn() }, { isCancellationRequested: false, onCancellationRequested: jest.fn() })),
   },
+  ProgressLocation: { Notification: 15 },
   workspace: {
     getConfiguration: jest.fn(() => ({
       get: jest.fn((key, defaultValue) => defaultValue),
@@ -58,9 +67,9 @@ jest.mock('vscode', () => ({
 const ext = require('../src/extension.js');
 const {
   executableCandidates, firstExecutable, resolveGlobalCommand, resolveScript,
-  resolveRunner, formatAge, buildQueryArgs, parseQueryResults,
+  resolveRunner, ensureRunner, formatAge, gradeFromAge, buildQueryArgs, parseQueryResults,
   getStatus, mtimeFallback, updateStatusBar, runRegenerate, runQuery,
-  checkStaleContext, suppressionKey,
+  checkStaleContext, suppressionKey, _resetInternalState,
 } = ext;
 
 // Shared handle to the mocked vscode module.
@@ -70,10 +79,12 @@ const vscode = require('vscode');
 function resetVscodeMocks() {
   vscode.window.showWarningMessage.mockReset();
   vscode.window.showInformationMessage.mockReset();
+  vscode.window.showErrorMessage.mockReset();
   vscode.window.showInputBox.mockReset();
   vscode.window.showQuickPick.mockReset();
   vscode.window.showTextDocument.mockReset();
   vscode.window.createTerminal.mockClear();
+  vscode.window.withProgress.mockClear(); // clear calls, keep the pass-through impl
 }
 
 // Helper to set process.platform
@@ -417,6 +428,7 @@ describe('getStatus / mtimeFallback', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    _resetInternalState();
     setPlatform('darwin');
   });
 
@@ -443,15 +455,107 @@ describe('getStatus / mtimeFallback', () => {
     expect(status).toBeNull();
   });
 
-  test('mtimeFallback returns grade A when a context file exists', () => {
+  test('mtimeFallback grades honestly from file age (ancient file → D, no fabricated score)', () => {
     fs.existsSync.mockReturnValue(true);
-    fs.statSync.mockReturnValue({ mtimeMs: 1000 });
+    fs.statSync.mockReturnValue({ mtimeMs: 1000 }); // 1970 → decades old
     return new Promise((resolve) => {
       mtimeFallback('/workspace', (status) => {
-        expect(status).toMatchObject({ grade: 'A', score: 100 });
+        expect(status).toMatchObject({ grade: 'D', score: null });
         resolve();
       });
     });
+  });
+
+  test('mtimeFallback grades a fresh file A', () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: Date.now() - 10 * 60 * 1000 }); // 10 min old
+    return new Promise((resolve) => {
+      mtimeFallback('/workspace', (status) => {
+        expect(status).toMatchObject({ grade: 'A' });
+        resolve();
+      });
+    });
+  });
+
+  test('throttles CLI probes: unchanged mtime is served from cache, mtime change re-probes', async () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: 5000 });
+    execFile.mockClear();
+    execFile.mockImplementation((cmd, args, opts, cb) =>
+      cb(null, JSON.stringify({ grade: 'B', score: 80, tokens: 100, reduction: 90 })));
+
+    const first = await getStatus('/workspace', runner);
+    expect(first.grade).toBe('B');
+    expect(execFile).toHaveBeenCalledTimes(1);
+
+    const second = await getStatus('/workspace', runner);
+    expect(second.grade).toBe('B'); // same data…
+    expect(execFile).toHaveBeenCalledTimes(1); // …without a second spawn
+
+    fs.statSync.mockReturnValue({ mtimeMs: 6000 }); // context regenerated
+    await getStatus('/workspace', runner);
+    expect(execFile).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('gradeFromAge', () => {
+  test('maps age in hours onto the A–D scale', () => {
+    expect(gradeFromAge(0.5)).toBe('A');
+    expect(gradeFromAge(3)).toBe('B');
+    expect(gradeFromAge(12)).toBe('C');
+    expect(gradeFromAge(48)).toBe('D');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('runner cache / ensureRunner', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetInternalState();
+    setPlatform('darwin');
+    os.homedir.mockReturnValue('/home/user');
+    vscode.workspace.getConfiguration.mockReturnValue({ get: jest.fn((k, d) => d) });
+  });
+
+  test('caches a resolved global command and revalidates with a single existsSync', () => {
+    fs.existsSync.mockImplementation(p => p === '/usr/local/bin/sigmap');
+    fs.accessSync.mockImplementation(p => {
+      if (p !== '/usr/local/bin/sigmap') throw new Error('not executable');
+    });
+
+    const first = resolveRunner('/workspace');
+    expect(first).toEqual({ type: 'command', path: '/usr/local/bin/sigmap' });
+
+    // Full probing would now fail — but the cached path still exists, so it is reused.
+    fs.accessSync.mockImplementation(() => { throw new Error('not executable'); });
+    expect(resolveRunner('/workspace')).toEqual(first);
+
+    // Cached binary disappears → cache dropped, resolution honestly returns null.
+    fs.existsSync.mockReturnValue(false);
+    expect(resolveRunner('/workspace')).toBeNull();
+  });
+
+  test('ensureRunner runs the shell probe at most once per session', async () => {
+    fs.existsSync.mockReturnValue(false);
+    fs.accessSync.mockImplementation(() => { throw new Error('no'); });
+    execFile.mockClear();
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('not found'), ''));
+
+    expect(await ensureRunner('/workspace')).toBeNull();
+    const probeCalls = execFile.mock.calls.length;
+    expect(probeCalls).toBeGreaterThan(0); // shells were consulted…
+
+    expect(await ensureRunner('/workspace')).toBeNull();
+    expect(execFile.mock.calls.length).toBe(probeCalls); // …but never again
+  });
+
+  test('ensureRunner adopts a shell-resolved path', async () => {
+    fs.accessSync.mockImplementation(() => { throw new Error('no'); });
+    fs.existsSync.mockImplementation(p => p === '/opt/somewhere/sigmap');
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null, '/opt/somewhere/sigmap\n'));
+
+    expect(await ensureRunner('/workspace')).toEqual({ type: 'command', path: '/opt/somewhere/sigmap' });
   });
 });
 
@@ -474,12 +578,30 @@ describe('runRegenerate', () => {
     expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('npm install -g sigmap');
   });
 
-  test('launches a terminal for a resolved runner', async () => {
-    const term = { show: jest.fn(), sendText: jest.fn() };
-    vscode.window.createTerminal.mockReturnValue(term);
+  test('runs the CLI under withProgress and notifies on success', async () => {
+    execFile.mockImplementation((cmd, args, opts, cb) => { cb(null, 'ok', ''); return { kill: jest.fn() }; });
     await runRegenerate('/workspace', { type: 'command', path: '/bin/sigmap' });
-    expect(vscode.window.createTerminal).toHaveBeenCalled();
-    expect(term.sendText).toHaveBeenCalledWith(expect.stringContaining('/bin/sigmap'));
+    expect(vscode.window.withProgress).toHaveBeenCalled();
+    expect(execFile).toHaveBeenCalledWith(
+      '/bin/sigmap', [], expect.objectContaining({ cwd: '/workspace' }), expect.any(Function));
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('SigMap: context regenerated.');
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  test('surfaces a failure instead of staying silent', async () => {
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+    execFile.mockImplementation((cmd, args, opts, cb) => { cb(new Error('exit 1'), '', 'boom'); return { kill: jest.fn() }; });
+    await runRegenerate('/workspace', { type: 'command', path: '/bin/sigmap' });
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining('failed'), 'Show Output');
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('runs script runners through node', async () => {
+    execFile.mockImplementation((cmd, args, opts, cb) => { cb(null, '', ''); return { kill: jest.fn() }; });
+    await runRegenerate('/workspace', { type: 'script', path: '/ws/gen-context.js' });
+    expect(execFile).toHaveBeenCalledWith(
+      process.execPath, ['/ws/gen-context.js'], expect.any(Object), expect.any(Function));
   });
 });
 
@@ -561,10 +683,13 @@ describe('integration tests', () => {
 
   test('registers sigmap.queryContext during activation', async () => {
     setPlatform('darwin');
+    _resetInternalState();
     // Stateful mock impls leak from earlier tests — pin the ones activate() touches.
-    fs.existsSync.mockReturnValue(false); // no runner found → no execFile spawn
+    fs.existsSync.mockReturnValue(false); // no runner found → no health spawn
     os.homedir.mockReturnValue('/home/user');
     execFileSync.mockImplementation(() => { throw new Error('not found'); });
+    // ensureRunner's once-per-session shell probe must resolve deterministically.
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('not found'), ''));
 
     // Augment the minimal vscode mock with the APIs activate() + decorations use.
     const mockVscode = require('vscode');
@@ -604,8 +729,11 @@ describe('integration tests', () => {
 
   test('openContext opens the context file when it exists', async () => {
     resetVscodeMocks();
+    _resetInternalState();
     vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/workspace' } }];
     fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: Date.now() });
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('no health'), ''));
     fs.readFileSync.mockReturnValue('### src/a.js\n'); // decorations reads the context file during activate
     vscode.commands.registerCommand.mockClear();
     jest.useFakeTimers();
