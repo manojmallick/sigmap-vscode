@@ -1,8 +1,8 @@
 {
   "name": "sigmap",
   "displayName": "SigMap — AI Context Engine",
-  "description": "96.9% token reduction for Copilot, Claude & Cursor. Extracts code signatures from 29 languages into copilot-instructions.md automatically.",
-  "version": "4.2.0",
+  "description": "96.9% token reduction for Copilot, Claude & Cursor. Extracts code signatures from 33 languages into copilot-instructions.md automatically.",
+  "version": "4.2.1",
   "publisher": "manojmallick",
   "engines": {
     "vscode": "^1.85.0"

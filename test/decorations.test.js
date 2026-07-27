@@ -202,26 +202,32 @@ describe('applyDecorations', () => {
     expect(() => applyDecorations('/workspace')).not.toThrow();
   });
 
-  test('handles suffix matching for partial paths', () => {
-    const content = `### index.ts`;
+  test('requires exact relative-path match (no suffix false positives)', () => {
+    // "index.ts" in the map must NOT light up src/index.ts — suffix matching
+    // marked every same-named file as included in multi-package repos.
+    const content = `### index.ts\n### src/included.ts`;
     fs.existsSync.mockReturnValue(true);
     fs.readFileSync.mockReturnValue(content);
 
-    const mockEditor = {
+    const makeEditor = (fsPath) => ({
       document: {
-        uri: { fsPath: '/workspace/src/index.ts' },
+        uri: { fsPath },
         lineAt: jest.fn((n) => ({ range: { start: {}, end: {} } })),
         lineCount: 10,
       },
       setDecorations: jest.fn(),
-    };
-    mockVscode.window.visibleTextEditors = [mockEditor];
+    });
+    const nested = makeEditor('/workspace/src/index.ts');   // suffix-only match → excluded
+    const exact  = makeEditor('/workspace/src/included.ts'); // exact match → included
+    mockVscode.window.visibleTextEditors = [nested, exact];
 
-    const { applyDecorations, GREEN } = decs;
+    const { applyDecorations, GREEN, GREY } = decs;
     applyDecorations('/workspace');
 
-    // src/index.ts should match "index.ts" via endsWith logic
-    expect(mockEditor.setDecorations).toHaveBeenCalledWith(GREEN, expect.any(Array));
+    expect(nested.setDecorations).toHaveBeenCalledWith(GREEN, []);
+    expect(nested.setDecorations).toHaveBeenCalledWith(GREY, expect.arrayContaining([expect.anything()]));
+    expect(exact.setDecorations).toHaveBeenCalledWith(GREEN, expect.arrayContaining([expect.anything()]));
+    expect(exact.setDecorations).toHaveBeenCalledWith(GREY, []);
   });
 
   test('module exports applyDecorations and scheduleUpdate', () => {

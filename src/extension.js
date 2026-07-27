@@ -5,8 +5,9 @@
  *
  * Features:
  *  - Status bar: shows health grade (A/B/C/D) and time since last regen
- *  - Command: SigMap: Regenerate Context  (runs node gen-context.js)
+ *  - Command: SigMap: Regenerate Context  (runs gen-context with progress + cancel)
  *  - Command: SigMap: Open Context File
+ *  - Command: SigMap: Query Context      (ranked files via --query --json)
  *  - Notification: when copilot-instructions.md is > 24 h stale
  *
  * Zero runtime dependencies — uses only the VS Code API.
@@ -16,7 +17,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFile, execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -25,9 +26,26 @@ const STALE_HOURS = 24;
 const STATUS_INTERVAL_MS = 60 * 1000; // refresh status bar every 60 s
 const EXECUTABLE_NAMES = ['sigmap', 'gen-context'];
 const QUERY_TOP = 10; // default number of ranked files for SigMap: Query Context
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HEALTH_PROBE_INTERVAL_MS = 10 * 60 * 1000; // re-run the CLI health probe at most every 10 min
+const HEALTH_TIMEOUT_MS = 8000;
+const REGEN_TIMEOUT_MS = 5 * 60 * 1000;
+const STALE_REPROMPT_MS = DAY_MS; // re-prompt about a stale context at most once a day
 
 // Grade ≥ 90 → A, ≥ 75 → B, ≥ 60 → C, < 60 → D
 const GRADE_ICONS = { A: '$(check) A', B: '$(info) B', C: '$(warning) C', D: '$(error) D' };
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+
+let _channel = null;
+
+/** Log a diagnostic line to the SigMap output channel (never throws). */
+function log(msg) {
+  try {
+    if (!_channel) _channel = vscode.window.createOutputChannel('SigMap');
+    _channel.appendLine(`[${new Date().toISOString()}] ${msg}`);
+  } catch (_) {}
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,13 +108,15 @@ function firstExecutable(paths) {
  * Required because macOS GUI apps (VS Code) do NOT inherit shell PATH,
  * so ~/.volta/bin and nvm paths are invisible without this.
  *
+ * Filesystem probing only — the (slow) shell lookup lives in probeShellOnce()
+ * so it can run asynchronously and at most once per session.
+ *
  * Resolution order:
  *  1. workspace node_modules/.bin/gen-context  (local npm install)
  *  2. ~/.volta/bin/gen-context                 (Volta)
  *  3. ~/.nvm/versions/node/<latest>/bin/gen-context (nvm)
  *  4. /usr/local/bin, /opt/homebrew/bin        (classic npm / Homebrew)
  *  5. ~/.npm-global/bin                        (npm prefix override)
- *  6. login-shell `which gen-context`          (last resort)
  *
  * @param {string|null} root - workspace root (may be null)
  * @returns {string|null} absolute path to binary, or null
@@ -172,67 +192,140 @@ function resolveGlobalCommand(root) {
     addDir(path.join(home, '.local', 'bin'));
   }
 
-  const known = firstExecutable(candidates);
-  if (known) return known;
+  return firstExecutable(candidates);
+}
 
-  // 7. last resort: ask shell/path resolver
-  if (isWindows()) {
-    for (const name of EXECUTABLE_NAMES) {
-      try {
-        const result = execFileSync('where', [name], { timeout: 4000, encoding: 'utf8' });
-        const first = result.split(/\r?\n/)
-          .map(s => s.trim())
-          .find(s => s && !s.startsWith('INFO:') && !s.startsWith('WARNING:') && fs.existsSync(s));
-        if (first) return first;
-      } catch (_) {}
-    }
-    return null;
+// ── Runner resolution (cached) ───────────────────────────────────────────────
+
+// Cached global-command path. The local-script lookup stays live (it is a
+// couple of cheap existsSync calls and must react to setting changes); the
+// global probe walks dozens of paths, so its successful result is cached and
+// revalidated with a single existsSync. Failures are never cached.
+let _globalCommandCache = null;
+// The login-shell lookup spawns real shells, so it runs at most once per session.
+let _shellProbePromise = null;
+
+/**
+ * Fast, synchronous runner resolution (filesystem probing only):
+ *   { type: 'script', path }  → run as `node "<path>"`
+ *   { type: 'command', path } → run as `"<path>"` directly
+ *   null                      → nothing found (see ensureRunner for the shell fallback)
+ */
+function resolveRunner(root) {
+  const script = resolveScript(root);
+  if (script) return { type: 'script', path: script };
+
+  if (_globalCommandCache && fs.existsSync(_globalCommandCache)) {
+    return { type: 'command', path: _globalCommandCache };
   }
+  _globalCommandCache = null;
 
-  // 8. last resort: ask a login shell
-  for (const sh of ['/bin/zsh', '/bin/bash']) {
-    for (const name of EXECUTABLE_NAMES) {
-      try {
-        const result = execFileSync(sh, ['-l', '-c', `command -v ${name} || which ${name}`], { timeout: 4000, encoding: 'utf8' });
-        const cmd = result.trim();
-        if (cmd && fs.existsSync(cmd)) return cmd;
-      } catch (_) {}
-    }
+  const cmd = resolveGlobalCommand(root);
+  if (cmd) {
+    log(`Runner: global command found at ${cmd}`);
+    _globalCommandCache = cmd;
+    return { type: 'command', path: cmd };
   }
-
   return null;
 }
 
 /**
- * Returns a unified runner descriptor:
- *   { type: 'script', path }  → run as `node "<path>"`
- *   { type: 'command', path } → run as `"<path>"` directly
- *   null                      → nothing found
+ * Async lookup via `where` (Windows) or a login shell (Unix). Runs at most
+ * once per session — previous versions ran this synchronously on every status
+ * tick, freezing the extension host for up to ~16 s when sigmap wasn't installed.
  */
-function resolveRunner(root) {
-  const script = resolveScript(root);
-  if (script) {
-    console.log('[SigMap] Runner: local script found at', script);
-    return { type: 'script', path: script };
+function probeShellOnce() {
+  if (_shellProbePromise) return _shellProbePromise;
+  _shellProbePromise = new Promise((resolve) => {
+    const attempts = [];
+    if (isWindows()) {
+      for (const name of EXECUTABLE_NAMES) attempts.push(['where', [name]]);
+    } else {
+      for (const sh of ['/bin/zsh', '/bin/bash']) {
+        for (const name of EXECUTABLE_NAMES) {
+          attempts.push([sh, ['-l', '-c', `command -v ${name} || which ${name}`]]);
+        }
+      }
+    }
+    const tryNext = (i) => {
+      if (i >= attempts.length) return resolve(null);
+      try {
+        execFile(attempts[i][0], attempts[i][1], { timeout: 4000, encoding: 'utf8' }, (err, stdout) => {
+          if (!err) {
+            const first = String(stdout).split(/\r?\n/)
+              .map(s => s.trim())
+              .find(s => s && !s.startsWith('INFO:') && !s.startsWith('WARNING:') && fs.existsSync(s));
+            if (first) return resolve(first);
+          }
+          tryNext(i + 1);
+        });
+      } catch (_) {
+        tryNext(i + 1);
+      }
+    };
+    tryNext(0);
+  });
+  return _shellProbePromise;
+}
+
+/** Full resolution: fast path first, then the once-per-session shell probe. */
+async function ensureRunner(root) {
+  const fast = resolveRunner(root);
+  if (fast) return fast;
+  const shell = await probeShellOnce();
+  if (shell && fs.existsSync(shell)) {
+    log(`Runner: shell lookup found ${shell}`);
+    _globalCommandCache = shell;
+    return { type: 'command', path: shell };
   }
-  const cmd = resolveGlobalCommand(root);
-  if (cmd) {
-    console.log('[SigMap] Runner: global command found at', cmd);
-    return { type: 'command', path: cmd };
-  }
-  console.log('[SigMap] Runner: no script or command found (gen-context not installed globally)');
   return null;
+}
+
+// ── Health status (throttled) ────────────────────────────────────────────────
+
+// Last CLI probe, reused between probes — only the age is recomputed locally.
+let _healthCache = null; // { root, mtimeMs, atMs, status }
+
+/** Map a context-file age in hours onto the A–D grade scale. */
+function gradeFromAge(hours) {
+  if (hours < 1) return 'A';
+  if (hours < 6) return 'B';
+  if (hours < 24) return 'C';
+  return 'D';
 }
 
 /**
  * Returns { daysSince, grade, score, tokens, reduction } for a given cwd.
- * Uses gen-context --health --json when available; falls back to mtime check.
+ * Uses gen-context --health --json when available; falls back to an
+ * age-derived grade. The CLI probe is throttled: it only runs when the
+ * context file's mtime changed or the last probe is older than
+ * HEALTH_PROBE_INTERVAL_MS.
  */
-function getStatus(root, runner) {
+function getStatus(root, runner, force = false) {
   return new Promise((resolve) => {
     if (!root) return resolve(null);
 
-    // Try gen-context --health --json for rich data
+    const ctxPath = path.join(root, CONTEXT_FILE);
+    if (!fs.existsSync(ctxPath)) {
+      _healthCache = null;
+      return resolve(null);
+    }
+
+    const mtimeMs = fs.statSync(ctxPath).mtimeMs;
+    const nowMs = Date.now();
+    const daysSince = (nowMs - mtimeMs) / DAY_MS;
+
+    const c = _healthCache;
+    if (!force && c && c.root === root && c.mtimeMs === mtimeMs &&
+        nowMs - c.atMs < HEALTH_PROBE_INTERVAL_MS) {
+      return resolve({ ...c.status, daysSince });
+    }
+
+    const finish = (status) => {
+      if (status) _healthCache = { root, mtimeMs, atMs: nowMs, status };
+      resolve(status);
+    };
+
     if (runner) {
       const [cmd, args] = runner.type === 'script'
         ? [process.execPath, [runner.path, '--health', '--json']]
@@ -240,22 +333,16 @@ function getStatus(root, runner) {
 
       // Validate command exists before executing
       if (!fs.existsSync(cmd)) {
-        console.log('[SigMap] Warning: command does not exist:', cmd);
-        return mtimeFallback(root, resolve);
+        log(`Warning: command does not exist: ${cmd}`);
+        return mtimeFallback(root, finish);
       }
 
       try {
-        execFile(cmd, args, { cwd: root, timeout: 8000 }, (err, stdout) => {
+        execFile(cmd, args, { cwd: root, timeout: HEALTH_TIMEOUT_MS }, (err, stdout) => {
           if (!err) {
             try {
               const data = JSON.parse(stdout.trim());
-              const ctxPath = path.join(root, CONTEXT_FILE);
-              let daysSince = null;
-              if (fs.existsSync(ctxPath)) {
-                const mtime = fs.statSync(ctxPath).mtimeMs;
-                daysSince = (Date.now() - mtime) / (1000 * 60 * 60 * 24);
-              }
-              return resolve({
+              return finish({
                 grade:     data.grade     || 'A',
                 score:     data.score     || 100,
                 daysSince,
@@ -265,25 +352,25 @@ function getStatus(root, runner) {
             } catch (_) {}
           }
           // Fallback to mtime-only
-          mtimeFallback(root, resolve);
+          mtimeFallback(root, finish);
         });
       } catch (spawnErr) {
-        console.log('[SigMap] Error spawning command:', spawnErr.message);
-        mtimeFallback(root, resolve);
+        log(`Error spawning command: ${spawnErr.message}`);
+        mtimeFallback(root, finish);
       }
     } else {
-      mtimeFallback(root, resolve);
+      mtimeFallback(root, finish);
     }
   });
 }
-
 
 function mtimeFallback(root, resolve) {
   const ctxPath = path.join(root, CONTEXT_FILE);
   if (!fs.existsSync(ctxPath)) return resolve(null);
   const mtime = fs.statSync(ctxPath).mtimeMs;
-  const daysSince = (Date.now() - mtime) / (1000 * 60 * 60 * 24);
-  resolve({ grade: 'A', score: 100, daysSince });
+  const daysSince = (Date.now() - mtime) / DAY_MS;
+  // No CLI available: grade honestly from the file's age instead of a fixed A.
+  resolve({ grade: gradeFromAge(daysSince * 24), score: null, daysSince });
 }
 
 /** Format daysSince as a human-readable string. */
@@ -425,10 +512,11 @@ async function updateStatusBar(statusBar) {
   const age     = formatAge(status.daysSince);
   const tokStr  = status.tokens    ? `${(status.tokens / 1000).toFixed(1)}K tok` : '';
   const redStr  = status.reduction ? `${status.reduction}% \u2193` : '';
+  const scoreStr = typeof status.score === 'number' ? ` (${status.score}/100)` : '';
   const extras  = [tokStr, redStr].filter(Boolean);
   statusBar.text = `$(file-code) SigMap ${icon}${extras.length ? ' \u00b7 ' + extras.join(' \u00b7 ') : ''}`;
   statusBar.tooltip = [
-    `SigMap health: ${status.grade} (${status.score}/100)`,
+    `SigMap health: ${status.grade}${scoreStr}`,
     extras.length ? `Context size: ${tokStr}  Reduction: ${redStr}` : '',
     `Last regenerated: ${age}`,
     'Click to regenerate',
@@ -442,6 +530,10 @@ async function updateStatusBar(statusBar) {
 function suppressionKey(root) {
   return `cf.stale.suppress.${Buffer.from(root).toString('base64').slice(0, 16)}`;
 }
+
+// Checked on every status tick (not just activation), so long-lived windows
+// still get nudged — but prompt at most once per STALE_REPROMPT_MS.
+let _lastStalePromptMs = 0;
 
 async function checkStaleContext(context, root, runner) {
   if (!root) return;
@@ -457,6 +549,10 @@ async function checkStaleContext(context, root, runner) {
   const key = suppressionKey(root);
   if (context.workspaceState.get(key)) return;
 
+  const now = Date.now();
+  if (now - _lastStalePromptMs < STALE_REPROMPT_MS) return;
+  _lastStalePromptMs = now;
+
   const daysOld = Math.round(hoursSince / 24);
   const choice = await vscode.window.showInformationMessage(
     `SigMap: context file is ${daysOld} day${daysOld !== 1 ? 's' : ''} old. Regenerate now?`,
@@ -466,7 +562,7 @@ async function checkStaleContext(context, root, runner) {
   );
 
   if (choice === 'Regenerate') {
-    await runRegenerate(root, runner);
+    await runRegenerate(root, runner || await ensureRunner(root));
   } else if (choice === "Don't show again") {
     await context.workspaceState.update(key, true);
   }
@@ -494,73 +590,107 @@ async function runRegenerate(root, runner) {
     return;
   }
 
-  const cmd = runner.type === 'script'
-    ? `node "${runner.path}"`
-    : isWindows() ? `& "${runner.path}"` : `"${runner.path}"`;
+  const [cmd, args] = runner.type === 'script'
+    ? [process.execPath, [runner.path]]
+    : [runner.path, []];
+  log(`Regenerate: ${cmd} ${args.join(' ')}`);
 
-  const suffix = isWindows() ? `; echo "[SigMap] done"` : `&& echo "[SigMap] done"`;
-  const terminal = vscode.window.createTerminal({ name: 'SigMap', cwd: root });
-  terminal.show(true); // show but don't steal focus
-  terminal.sendText(`${cmd}${suffix}`);
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'SigMap: regenerating context\u2026',
+      cancellable: true,
+    },
+    (_progress, token) => new Promise((resolve) => {
+      let child = null;
+      try {
+        child = execFile(cmd, args, { cwd: root, timeout: REGEN_TIMEOUT_MS }, (err, stdout, stderr) => {
+          if (stdout) log(String(stdout).trim());
+          if (stderr) log(String(stderr).trim());
+          if (token.isCancellationRequested) return resolve(undefined);
+          if (err) {
+            log(`Regenerate failed: ${err.message}`);
+            Promise.resolve(vscode.window.showErrorMessage(
+              'SigMap: context regeneration failed \u2014 see the SigMap output channel.',
+              'Show Output'
+            )).then(choice => {
+              if (choice === 'Show Output' && _channel) _channel.show(true);
+            });
+          } else {
+            vscode.window.showInformationMessage('SigMap: context regenerated.');
+          }
+          resolve(undefined);
+        });
+      } catch (spawnErr) {
+        log(`Regenerate spawn error: ${spawnErr.message}`);
+        vscode.window.showErrorMessage(`SigMap: failed to run gen-context: ${spawnErr.message}`);
+        return resolve(undefined);
+      }
+      token.onCancellationRequested(() => {
+        try { if (child) child.kill(); } catch (_) {}
+      });
+    })
+  );
 }
 
 // ── Activation ────────────────────────────────────────────────────────────────
 
 /** @param {vscode.ExtensionContext} context */
 async function activate(context) {
-  console.log('[SigMap] ✓ Extension activated');
+  log('Extension activated');
 
   const statusBar = createStatusBarItem();
   context.subscriptions.push(statusBar);
-  console.log('[SigMap] ✓ Status bar created');
 
   // Initial status bar update
   const root = workspaceRoot();
-  console.log('[SigMap] Workspace root:', root || '(none)');
+  log(`Workspace root: ${root || '(none)'}`);
   await updateStatusBar(statusBar);
-  console.log('[SigMap] ✓ Status bar updated');
 
-  // Refresh status bar on interval
-  const interval = setInterval(() => updateStatusBar(statusBar), STATUS_INTERVAL_MS);
+  // Kick the once-per-session shell probe in the background so a missing
+  // fast-path resolution still finds shell-only installs without blocking.
+  if (root && !resolveRunner(root)) {
+    probeShellOnce().then(found => {
+      if (found) updateStatusBar(statusBar);
+    });
+  }
+
+  // Refresh status bar on interval; also re-check staleness (throttled inside).
+  const interval = setInterval(() => {
+    updateStatusBar(statusBar);
+    checkStaleContext(context, workspaceRoot(), null);
+  }, STATUS_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
-  console.log('[SigMap] ✓ Status bar refresh interval started');
 
   // Feature 2: gutter decorations — green (included) / grey (excluded)
   const decs = require('./decorations');
   context.subscriptions.push(decs.GREEN, decs.GREY);
-  console.log('[SigMap] ✓ Decorations loaded');
 
   if (root) {
-    console.log('[SigMap] Applying decorations to workspace:', root);
     decs.applyDecorations(root);
     vscode.window.onDidChangeActiveTextEditor(() => decs.scheduleUpdate(root), null, context.subscriptions);
-    console.log('[SigMap] ✓ Decorations applied, editor change listener registered');
-  } else {
-    console.log('[SigMap] No workspace root — decorations disabled');
   }
 
   // Refresh when workspace files change (i.e. context file regenerated)
   const watcher = vscode.workspace.createFileSystemWatcher('**/.github/copilot-instructions.md');
-  watcher.onDidChange(() => { console.log('[SigMap] Context file changed'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
-  watcher.onDidCreate(() => { console.log('[SigMap] Context file created'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
+  watcher.onDidChange(() => { log('Context file changed'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
+  watcher.onDidCreate(() => { log('Context file created'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
   context.subscriptions.push(watcher);
-  console.log('[SigMap] ✓ File watcher registered');
 
   // Command: regenerate
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.regenerate', async () => {
-      console.log('[SigMap] Command: regenerate context');
+      log('Command: regenerate context');
       const root = workspaceRoot();
-      const runner = resolveRunner(root);
+      const runner = await ensureRunner(root);
       await runRegenerate(root, runner);
     })
   );
-  console.log('[SigMap] ✓ Command "sigmap.regenerate" registered');
 
   // Command: open context file
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.openContext', async () => {
-      console.log('[SigMap] Command: open context file');
+      log('Command: open context file');
       const root = workspaceRoot();
       if (!root) {
         vscode.window.showWarningMessage('SigMap: no workspace folder open.');
@@ -575,35 +705,40 @@ async function activate(context) {
       await vscode.window.showTextDocument(uri);
     })
   );
-  console.log('[SigMap] ✓ Command "sigmap.openContext" registered');
 
   // Command: query context
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.queryContext', async () => {
-      console.log('[SigMap] Command: query context');
+      log('Command: query context');
       const root = workspaceRoot();
-      const runner = resolveRunner(root);
+      const runner = await ensureRunner(root);
       await runQuery(root, runner);
     })
   );
-  console.log('[SigMap] ✓ Command "sigmap.queryContext" registered');
 
   // Stale check on activation (slight delay to not block startup)
   setTimeout(async () => {
-    console.log('[SigMap] Running stale context check...');
     const root = workspaceRoot();
-    const runner = resolveRunner(root);
-    await checkStaleContext(context, root, runner);
+    await checkStaleContext(context, root, null);
   }, 3000);
 
-  console.log('[SigMap] ✓ Extension fully activated');
+  log('Extension fully activated');
 }
 
 function deactivate() {}
 
+/** Reset module-level caches — exported for tests only. */
+function _resetInternalState() {
+  _globalCommandCache = null;
+  _shellProbePromise = null;
+  _healthCache = null;
+  _lastStalePromptMs = 0;
+}
+
 module.exports = { activate, deactivate,
   // exported for testing:
   executableCandidates, firstExecutable, resolveGlobalCommand,
-  resolveScript, resolveRunner, formatAge, buildQueryArgs, parseQueryResults,
+  resolveScript, resolveRunner, ensureRunner, probeShellOnce, formatAge,
+  gradeFromAge, buildQueryArgs, parseQueryResults,
   getStatus, mtimeFallback, updateStatusBar, runRegenerate, runQuery,
-  checkStaleContext, suppressionKey };
+  checkStaleContext, suppressionKey, _resetInternalState };

@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.2.1] - 2026-07-28
+
+### Fixed
+- **Extension-host freeze** (#16): runner resolution ran on every 60 s status tick and, when sigmap wasn't installed, fell through to *synchronous* login-shell probes (up to ~16 s of blocking, every minute). The global-command resolution is now cached (revalidated with a single `existsSync`, failures never cached) and the shell lookup is asynchronous and runs at most once per session (`ensureRunner`).
+- **Health probe throttled** (#16): `--health --json` spawned every 60 s; it now runs only when the context file's mtime changes or the last probe is ≥ 10 min old — the age display is recomputed locally in between.
+- **Honest fallback grade** (#16): without the CLI, the status bar hardcoded grade A / score 100 regardless of age; the grade is now derived from the context file's age (A < 1 h, B < 6 h, C < 24 h, D after) and no score is fabricated.
+- **Regenerate failure feedback** (#16): regeneration ran fire-and-forget in a terminal; it now runs under a cancellable progress notification with a 5-minute cap, logs output to the SigMap output channel, and notifies on success or failure.
+- **Stale nudge in long-lived windows** (#16): the stale-context check ran once at activation; it now also runs on the status tick, re-prompting at most once every 24 h.
+- **Decoration false positives** (#16): gutter dots used suffix matching, so `index.ts` in the map lit up *every* `index.ts` in the workspace; matching is now exact on the workspace-relative path.
+- Diagnostics moved from `console.log` to a proper **SigMap output channel**; Marketplace description updated (29 → 33 languages).
+
 ## [4.2.0] - 2026-06-19
 
 ### Added
