@@ -53,16 +53,31 @@ function scheduleUpdate(root) {
 
 /**
  * Apply green (included) or grey (excluded) gutter dots to all visible editors.
+ * Multi-root aware: each editor is matched against its own workspace folder's
+ * context file, falling back to defaultRoot when the folder can't be resolved.
  */
-function applyDecorations(root) {
-  const ctxFile  = path.join(root, '.github', 'copilot-instructions.md');
-  const ctxPaths = parseContextPaths(ctxFile);
+function applyDecorations(defaultRoot) {
+  const pathsByRoot = new Map();
+  const ctxPathsFor = (root) => {
+    let cached = pathsByRoot.get(root);
+    if (!cached) {
+      cached = parseContextPaths(path.join(root, '.github', 'copilot-instructions.md'));
+      pathsByRoot.set(root, cached);
+    }
+    return cached;
+  };
 
   for (const editor of vscode.window.visibleTextEditors) {
+    const folder = typeof vscode.workspace.getWorkspaceFolder === 'function'
+      ? vscode.workspace.getWorkspaceFolder(editor.document.uri)
+      : null;
+    const root = folder ? folder.uri.fsPath : defaultRoot;
+    if (!root) continue;
+
     const rel = path.relative(root, editor.document.uri.fsPath).replace(/\\/g, '/');
     // Exact workspace-relative match only — suffix matching lit up every
     // same-named file (e.g. any index.ts) in multi-package repos.
-    const isIncluded = ctxPaths.has(rel);
+    const isIncluded = ctxPathsFor(root).has(rel);
 
     editor.setDecorations(GREEN, isIncluded ? [fullRange(editor)] : []);
     editor.setDecorations(GREY,  isIncluded ? [] : [fullRange(editor)]);

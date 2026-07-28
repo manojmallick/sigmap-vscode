@@ -56,6 +56,20 @@ function workspaceRoot() {
 }
 
 /**
+ * Multi-root aware root: the active editor's workspace folder when there is
+ * one, else the first workspace folder. All user-facing surfaces (status bar,
+ * commands, stale check, LM tool) key off this.
+ */
+function activeRoot() {
+  const editor = vscode.window.activeTextEditor;
+  if (editor && editor.document && typeof vscode.workspace.getWorkspaceFolder === 'function') {
+    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (folder) return folder.uri.fsPath;
+  }
+  return workspaceRoot();
+}
+
+/**
  * Resolve the path to gen-context.js (local script).
  * Uses sigmap.scriptPath setting if set; otherwise looks in workspace root
  * and workspace node_modules/.bin.
@@ -283,8 +297,9 @@ async function ensureRunner(root) {
 
 // ── Health status (throttled) ────────────────────────────────────────────────
 
-// Last CLI probe, reused between probes — only the age is recomputed locally.
-let _healthCache = null; // { root, mtimeMs, atMs, status }
+// Last CLI probe per root, reused between probes — only the age is recomputed
+// locally. Keyed by root so multi-root workspaces don't thrash the probe.
+const _healthCache = new Map(); // root -> { mtimeMs, atMs, status }
 
 /** Map a context-file age in hours onto the A–D grade scale. */
 function gradeFromAge(hours) {
@@ -307,7 +322,7 @@ function getStatus(root, runner, force = false) {
 
     const ctxPath = path.join(root, CONTEXT_FILE);
     if (!fs.existsSync(ctxPath)) {
-      _healthCache = null;
+      _healthCache.delete(root);
       return resolve(null);
     }
 
@@ -315,14 +330,14 @@ function getStatus(root, runner, force = false) {
     const nowMs = Date.now();
     const daysSince = (nowMs - mtimeMs) / DAY_MS;
 
-    const c = _healthCache;
-    if (!force && c && c.root === root && c.mtimeMs === mtimeMs &&
+    const c = _healthCache.get(root);
+    if (!force && c && c.mtimeMs === mtimeMs &&
         nowMs - c.atMs < HEALTH_PROBE_INTERVAL_MS) {
       return resolve({ ...c.status, daysSince });
     }
 
     const finish = (status) => {
-      if (status) _healthCache = { root, mtimeMs, atMs: nowMs, status };
+      if (status) _healthCache.set(root, { mtimeMs, atMs: nowMs, status });
       resolve(status);
     };
 
@@ -494,7 +509,7 @@ function createStatusBarItem() {
 }
 
 async function updateStatusBar(statusBar) {
-  const root = workspaceRoot();
+  const root = activeRoot();
   const runner = resolveRunner(root);
 
   if (!root) {
@@ -663,7 +678,7 @@ async function activate(context) {
   // Refresh status bar on interval; also re-check staleness (throttled inside).
   const interval = setInterval(() => {
     updateStatusBar(statusBar);
-    checkStaleContext(context, workspaceRoot(), null);
+    checkStaleContext(context, activeRoot(), null);
   }, STATUS_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
 
@@ -673,20 +688,24 @@ async function activate(context) {
 
   if (root) {
     decs.applyDecorations(root);
-    vscode.window.onDidChangeActiveTextEditor(() => decs.scheduleUpdate(root), null, context.subscriptions);
+    // Editor switches can cross workspace folders — refresh the status bar too.
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      updateStatusBar(statusBar);
+      decs.scheduleUpdate(activeRoot());
+    }, null, context.subscriptions);
   }
 
   // Refresh when workspace files change (i.e. context file regenerated)
   const watcher = vscode.workspace.createFileSystemWatcher('**/.github/copilot-instructions.md');
-  watcher.onDidChange(() => { log('Context file changed'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
-  watcher.onDidCreate(() => { log('Context file created'); updateStatusBar(statusBar); if (root) decs.scheduleUpdate(root); });
+  watcher.onDidChange(() => { log('Context file changed'); updateStatusBar(statusBar); decs.scheduleUpdate(activeRoot()); });
+  watcher.onDidCreate(() => { log('Context file created'); updateStatusBar(statusBar); decs.scheduleUpdate(activeRoot()); });
   context.subscriptions.push(watcher);
 
   // Command: regenerate
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.regenerate', async () => {
       log('Command: regenerate context');
-      const root = workspaceRoot();
+      const root = activeRoot();
       const runner = await ensureRunner(root);
       await runRegenerate(root, runner);
     })
@@ -696,7 +715,7 @@ async function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.openContext', async () => {
       log('Command: open context file');
-      const root = workspaceRoot();
+      const root = activeRoot();
       if (!root) {
         vscode.window.showWarningMessage('SigMap: no workspace folder open.');
         return;
@@ -715,7 +734,7 @@ async function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('sigmap.queryContext', async () => {
       log('Command: query context');
-      const root = workspaceRoot();
+      const root = activeRoot();
       const runner = await ensureRunner(root);
       await runQuery(root, runner);
     })
@@ -725,15 +744,14 @@ async function activate(context) {
   // provider (feature-detected — no-ops on hosts without vscode.lm).
   try {
     const ai = require('./aiIntegrations');
-    ai.registerAiIntegrations(context, { workspaceRoot, ensureRunner, runQueryJson, log });
+    ai.registerAiIntegrations(context, { workspaceRoot: activeRoot, ensureRunner, runQueryJson, log });
   } catch (e) {
     log(`AI integrations failed to register: ${e.message}`);
   }
 
   // Stale check on activation (slight delay to not block startup)
   setTimeout(async () => {
-    const root = workspaceRoot();
-    await checkStaleContext(context, root, null);
+    await checkStaleContext(context, activeRoot(), null);
   }, 3000);
 
   log('Extension fully activated');
@@ -745,12 +763,13 @@ function deactivate() {}
 function _resetInternalState() {
   _globalCommandCache = null;
   _shellProbePromise = null;
-  _healthCache = null;
+  _healthCache.clear();
   _lastStalePromptMs = 0;
 }
 
 module.exports = { activate, deactivate,
   // exported for testing:
+  workspaceRoot, activeRoot,
   executableCandidates, firstExecutable, resolveGlobalCommand,
   resolveScript, resolveRunner, ensureRunner, probeShellOnce, formatAge,
   gradeFromAge, buildQueryArgs, parseQueryResults, runQueryJson,

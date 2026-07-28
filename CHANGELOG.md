@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.4.0] - 2026-07-28
+
+### Added
+- **Multi-root workspace support** (#20): the active editor's workspace folder now drives the status bar (refreshing on editor switch), the regenerate/open-context/query commands, the stale check, and the `sigmap_query` LM tool — previously everything was pinned to folder 0. Gutter decorations match each visible editor against its *own* folder's context file. Health probes are cached per root, so alternating between folders doesn't thrash the CLI.
+
 ## [4.3.0] - 2026-07-28
 
 ### Added
