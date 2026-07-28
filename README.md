@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Node ≥18](https://img.shields.io/badge/node-%E2%89%A518-brightgreen?logo=node.js)](https://nodejs.org)
 
-**80.0% retrieval hit@5 · 96.9% token reduction · 29 languages · Zero npm deps**
+**85.6% retrieval hit@5 · 96.8% token reduction · 33 languages · Zero npm deps**
 
 </div>
 
@@ -29,16 +29,18 @@ Before SigMap: "I don't know your codebase — can you share some files?"
 After SigMap:  "I can see your AuthService, UserRepository, 47 API routes…"
 ```
 
-**A 50,000-line TypeScript monorepo → ~3,800 tokens of pure signatures — 96.9% reduction.**
+**A 50,000-line TypeScript monorepo → ~3,800 tokens of pure signatures — a 96.8% average reduction across 18 real repos.**
 
 ---
 
-## What's new in v4.0
+## What's new in v4.2–v4.4
 
-- Standalone release — independent version cycle from the SigMap CLI core
-- Compatible with SigMap CLI v6.0: graph-boosted retrieval (83.3% hit@5), incremental sig cache
-- 29 languages (up from 25 in v2.x)
-- Corrected canonical benchmark numbers (96.9% token reduction, 80.0% hit@5)
+- **`sigmap_query` language model tool** (v4.3) — Copilot agent mode calls SigMap's ranked retrieval automatically; reference it in chat as `#sigmap`
+- **One-click MCP registration** (v4.3) — the SigMap MCP server registers via VS Code's MCP provider API, no `mcp.json` editing
+- **Multi-root workspaces** (v4.4) — the active editor's folder drives the status bar, commands, and decorations
+- **In-editor query** (v4.2) — `SigMap: Query Context` shows ranked files in a QuickPick
+- **Hardened core loop** (v4.2.1) — cached command resolution, throttled health probes, honest fallback grades, regenerate failure feedback
+- Compatible with SigMap CLI v8.x: 33 languages, 20 MCP tools
 
 ---
 
@@ -60,7 +62,7 @@ Click the status bar item for **instant regeneration**.
 - **Auto-regeneration** — checks on startup and every 60 seconds
 - **Stale notifications** — pop-up with one-click Regenerate after 24 h
 - **Secret scanning** — AWS keys, tokens, DB strings auto-redacted before writing
-- **MCP server** — 9 tools exposed over stdio JSON-RPC for Claude / Cursor
+- **MCP server** — 20 tools exposed over stdio JSON-RPC for Claude / Cursor / Copilot
 - **One-command context** — `SigMap: Regenerate Context` from the Command Palette
 
 ---
@@ -143,15 +145,15 @@ sigmap validate           # check coverage health
 sigmap judge              # groundedness score for an AI answer
 sigmap --watch            # auto-regenerate on file changes
 sigmap --health           # 0–100 health score
-sigmap --mcp              # start MCP server (9 tools)
+sigmap --mcp              # start MCP server (20 tools)
 sigmap --diff             # context for changed files only
 ```
 
 ---
 
-## MCP server (9 tools)
+## MCP server (20 tools)
 
-Works with Claude Code and Cursor via `sigmap --mcp`:
+Works with Claude Code, Cursor, and Copilot agent mode via `sigmap --mcp` (registered with one click by this extension). Key tools:
 
 | Tool | Description |
 |---|---|
@@ -165,21 +167,22 @@ Works with Claude Code and Cursor via `sigmap --mcp`:
 | `list_modules` | All modules sorted by token count |
 | `get_impact` | Blast-radius BFS for a changed file |
 
+…plus 11 more (`squeeze_output`, `get_method_impact`, memory/session tools, …) — see the [docs](https://manojmallick.github.io/sigmap/) for the full list.
+
 ---
 
 ## Benchmark
 
 | Metric | Value |
 |---|---:|
-| Retrieval hit@5 | **80.0%** vs 13.6% baseline |
-| Graph-boosted hit@5 | **83.3%** |
-| Overall token reduction | **96.9%** |
-| Prompt reduction | **40.8%** (2.84 → 1.68 prompts) |
-| Task success proxy | **52.2%** |
-| GPT-4o overflow repos | 13/18 → **0/18** |
-| Languages | **29** |
+| Retrieval hit@5 | **85.6%** vs 13.6% random baseline (6.3×) |
+| Honest grep-agent baseline | 42.7% → **85.6%** (2.0× lift) |
+| Overall token reduction | **96.8%** (avg across 18 real repos) |
+| Prompt reduction | **48%** (2.84 → 1.48 prompts/task) |
+| Task success proxy | **66.7%** |
+| Languages | **33** |
 
-Benchmark ID: `sigmap-v6.0-main` · Date: 2026-04-19
+Benchmark ID: `sigmap-v8.21-main` · Date: 2026-07-19
 
 ---
 
@@ -231,7 +234,7 @@ Benchmark ID: `sigmap-v6.0-main` · Date: 2026-04-19
 | **Claude / Claude Code** | Add `"outputs": ["claude"]` to config → writes `CLAUDE.md` |
 | **Cursor** | Add `"outputs": ["cursor"]` → writes `.cursorrules` |
 | **Windsurf** | Add `"outputs": ["windsurf"]` → writes `.windsurfrules` |
-| **MCP (Claude/Cursor)** | `sigmap --mcp` — 9 tools over stdio JSON-RPC |
+| **MCP (Claude/Cursor/Copilot)** | `sigmap --mcp` — 20 tools over stdio JSON-RPC (one-click registration via this extension) |
 
 ---
 
