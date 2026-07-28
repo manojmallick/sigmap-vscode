@@ -496,6 +496,51 @@ describe('getStatus / mtimeFallback', () => {
     await getStatus('/workspace', runner);
     expect(execFile).toHaveBeenCalledTimes(2);
   });
+
+  test('caches probes per root — alternating between two roots does not re-spawn', async () => {
+    fs.existsSync.mockReturnValue(true);
+    fs.statSync.mockReturnValue({ mtimeMs: 5000 });
+    execFile.mockClear();
+    execFile.mockImplementation((cmd, args, opts, cb) =>
+      cb(null, JSON.stringify({ grade: 'B', score: 80 })));
+
+    await getStatus('/root-a', runner);
+    await getStatus('/root-b', runner);
+    expect(execFile).toHaveBeenCalledTimes(2); // one probe per root
+
+    await getStatus('/root-a', runner);
+    await getStatus('/root-b', runner);
+    expect(execFile).toHaveBeenCalledTimes(2); // both roots served from cache
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('activeRoot', () => {
+  afterEach(() => {
+    delete vscode.window.activeTextEditor;
+    delete vscode.workspace.getWorkspaceFolder;
+  });
+
+  test('returns the active editor folder in a multi-root workspace', () => {
+    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/root-a' } }, { uri: { fsPath: '/root-b' } }];
+    vscode.window.activeTextEditor = { document: { uri: { fsPath: '/root-b/src/x.js' } } };
+    vscode.workspace.getWorkspaceFolder = jest.fn(() => ({ uri: { fsPath: '/root-b' } }));
+    expect(ext.activeRoot()).toBe('/root-b');
+    expect(vscode.workspace.getWorkspaceFolder).toHaveBeenCalled();
+  });
+
+  test('falls back to folder 0 without an active editor', () => {
+    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/root-a' } }];
+    vscode.window.activeTextEditor = undefined;
+    expect(ext.activeRoot()).toBe('/root-a');
+  });
+
+  test('falls back to folder 0 when the editor file is outside all folders', () => {
+    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/root-a' } }];
+    vscode.window.activeTextEditor = { document: { uri: { fsPath: '/elsewhere/x.js' } } };
+    vscode.workspace.getWorkspaceFolder = jest.fn(() => undefined);
+    expect(ext.activeRoot()).toBe('/root-a');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -230,6 +230,38 @@ describe('applyDecorations', () => {
     expect(exact.setDecorations).toHaveBeenCalledWith(GREY, []);
   });
 
+  test('multi-root: each editor is matched against its own folder context file', () => {
+    fs.existsSync.mockReturnValue(true);
+    // root-a's map includes src/main.ts; root-b's map includes only src/other.ts
+    fs.readFileSync.mockImplementation(p =>
+      String(p).startsWith('/root-a') ? '### src/main.ts' : '### src/other.ts');
+    mockVscode.workspace.getWorkspaceFolder = jest.fn(uri =>
+      uri.fsPath.startsWith('/root-a')
+        ? { uri: { fsPath: '/root-a' } }
+        : { uri: { fsPath: '/root-b' } });
+
+    const makeEditor = (fsPath) => ({
+      document: {
+        uri: { fsPath },
+        lineAt: jest.fn(() => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    });
+    const inA = makeEditor('/root-a/src/main.ts');  // included in root-a's map
+    const inB = makeEditor('/root-b/src/main.ts');  // NOT in root-b's map
+    mockVscode.window.visibleTextEditors = [inA, inB];
+
+    const { applyDecorations, GREEN, GREY } = decs;
+    applyDecorations('/root-a');
+
+    expect(inA.setDecorations).toHaveBeenCalledWith(GREEN, expect.arrayContaining([expect.anything()]));
+    expect(inB.setDecorations).toHaveBeenCalledWith(GREEN, []);
+    expect(inB.setDecorations).toHaveBeenCalledWith(GREY, expect.arrayContaining([expect.anything()]));
+
+    delete mockVscode.workspace.getWorkspaceFolder;
+  });
+
   test('module exports applyDecorations and scheduleUpdate', () => {
     expect(typeof decs.applyDecorations).toBe('function');
     expect(typeof decs.scheduleUpdate).toBe('function');
@@ -253,7 +285,16 @@ describe('scheduleUpdate', () => {
     fs.readFileSync.mockReturnValue('### src/index.ts');
 
     const mockVscode = require('vscode');
-    mockVscode.window.visibleTextEditors = [];
+    // Parsing is lazy per visible editor now — one editor makes readFileSync
+    // a valid "applyDecorations ran" signal.
+    mockVscode.window.visibleTextEditors = [{
+      document: {
+        uri: { fsPath: '/workspace/src/index.ts' },
+        lineAt: jest.fn(() => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    }];
 
     const { scheduleUpdate } = decs;
 
@@ -277,7 +318,16 @@ describe('scheduleUpdate', () => {
     fs.readFileSync.mockReturnValue('### src/index.ts');
 
     const mockVscode = require('vscode');
-    mockVscode.window.visibleTextEditors = [];
+    // Parsing is lazy per visible editor now — one editor makes readFileSync
+    // a valid "applyDecorations ran" signal.
+    mockVscode.window.visibleTextEditors = [{
+      document: {
+        uri: { fsPath: '/workspace/src/index.ts' },
+        lineAt: jest.fn(() => ({ range: { start: {}, end: {} } })),
+        lineCount: 10,
+      },
+      setDecorations: jest.fn(),
+    }];
 
     const { scheduleUpdate } = decs;
     scheduleUpdate('/workspace');
