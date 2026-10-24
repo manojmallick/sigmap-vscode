@@ -171,6 +171,13 @@ Works with Claude Code, Cursor, and Copilot agent mode via `sigmap --mcp` (regis
 
 ---
 
+## Development and tests
+
+```bash
+npm test             # Jest, runs the tests in test/
+npm run test:watch   # re-run on change
+```
+
 ## Benchmark
 
 | Metric | Value |
